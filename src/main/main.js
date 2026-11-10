@@ -5,12 +5,13 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { ROOT, DATA_DIR, ELECTRON_DATA, SETTINGS_FILE, LOG_FILE, NOTES_DIR } from '../paths.js';
-import { loadConfig } from '../security/config.js';
+import { loadConfig, saveSetting } from '../security/config.js';
 import { TOOL_MODES } from '../security/policy.js';
 import { logAction } from '../security/log.js';
 import { Agent } from '../agent/agent.js';
 import { ping } from '../agent/ollama.js';
 import { nodeOs } from '../tools/util.js';
+import { Speech } from '../speech/client.js';
 import { iconPng } from './icon.js';
 
 const INDEX_HTML = path.join(ROOT, 'src', 'renderer', 'index.html');
@@ -39,6 +40,9 @@ let state = 'idle';
 let hideTimer = null;
 let activeHotkey = null;
 let quitting = false;
+let turnActive = false; // триває запис, запит до моделі або озвучення
+let speech = null;
+let speechConfigKey = '';
 const pendingConfirms = new Map();
 
 const STATE_LABELS = {
@@ -80,6 +84,15 @@ function hidePanel() {
 
 function togglePanel() {
   if (win.isVisible() && win.isFocused()) hidePanel(); else showPanel();
+}
+
+// Гаряча клавіша: з голосом — «говорити / досить / замовкни», без голосу — показати або сховати панель
+function onHotkey() {
+  if (state === 'listening') speech.stopListening();
+  else if (state === 'speaking') speech.cancel();
+  else if (turnActive) showPanel({ focus: false });
+  else if (speech?.ready) startListening();
+  else togglePanel();
 }
 
 // Панель, показана без фокусу (відповідь прийшла, поки ти працюєш в іншому вікні), згодом ховається сама
@@ -159,16 +172,21 @@ function applyConfig({ announce = false } = {}) {
   activeHotkey = null;
   for (const key of [config.hotkey, ...FALLBACK_HOTKEYS.filter((k) => k !== config.hotkey)]) {
     let ok = false;
-    try { ok = globalShortcut.register(key, togglePanel); } catch { ok = false; }
+    try { ok = globalShortcut.register(key, onHotkey); } catch { ok = false; }
     if (ok) { activeHotkey = key; break; }
   }
   if (!activeHotkey) warnings.push(`Гарячу клавішу «${config.hotkey}» не вдалося зареєструвати. Відкривай панель клацанням по іконці в треї або зміни hotkey у налаштуваннях`);
   else if (activeHotkey !== config.hotkey) warnings.push(`Клавіша «${config.hotkey}» зайнята іншою програмою, тому зараз працює «${activeHotkey}». Змінити можна в налаштуваннях (hotkey)`);
 
+  // мовний сервіс перезапускаємо лише тоді, коли змінилися саме його налаштування
+  const key = JSON.stringify(config.speech);
+  if (speech && key !== speechConfigKey) { speechConfigKey = key; speech.start(config.speech); }
+  rebuildTrayMenu();
+
   // при старті панель сама забирає це через offgrid:ready
   if (announce) {
     send({ type: 'notice', text: warnings.length ? 'Налаштування перечитано, є зауваги:' : 'Налаштування перечитано.' });
-    send({ type: 'config', hotkey: activeHotkey, model: config.model, warnings });
+    send({ type: 'config', hotkey: activeHotkey, model: config.model, speakReplies: config.speakReplies, warnings });
   }
 }
 
@@ -177,9 +195,15 @@ function createTray() {
   tray = new Tray(nativeImage.createFromBuffer(iconPng('idle'), { scaleFactor: 2 }));
   tray.setToolTip('Offgrid — очікує');
   tray.on('click', togglePanel);
+  rebuildTrayMenu();
+}
+
+function rebuildTrayMenu() {
+  if (!tray) return;
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Показати панель', click: () => showPanel() },
     { label: 'Нова розмова', click: () => newChat() },
+    { label: 'Озвучувати відповіді', type: 'checkbox', checked: !!config?.speakReplies, enabled: !!config?.speech?.enabled, click: (item) => setSpeakReplies(item.checked) },
     { type: 'separator' },
     { label: 'Відкрити налаштування (settings.json)', click: () => shell.openPath(SETTINGS_FILE) },
     { label: 'Перечитати налаштування', click: () => { applyConfig({ announce: true }); showPanel(); } },
@@ -192,29 +216,102 @@ function createTray() {
 
 // ---------- Розмова ----------
 function newChat() {
-  agent.cancel();
-  denyAllConfirms();
+  cancelAll();
   agent.reset();
   send({ type: 'reset' });
   if (state === 'error') setState('idle');
 }
 
-async function handleAsk(text) {
-  if (agent.busy) return { ok: false, error: 'Зачекай, я ще виконую попередній запит.' };
+function cancelAll() {
+  agent.cancel();
+  denyAllConfirms();
+  speech?.cancel(); // зупиняє і запис, і озвучення
+}
+
+function showError(text) {
+  send({ type: 'error', text });
+  setState('error');
+  // помилка — не постійний стан: за кілька секунд повертаємось до очікування
+  setTimeout(() => { if (state === 'error' && !turnActive) setState('idle'); }, ERROR_SHOWN_MS);
+}
+
+function endTurn() {
+  turnActive = false;
+  send({ type: 'busy', value: false });
+  if (state !== 'error') setState('idle');
+  if (!win.isFocused()) { showPanel({ focus: false }); scheduleAutoHide(); }
+}
+
+function setSpeakReplies(value) {
+  config.speakReplies = value === true;
+  if (!saveSetting('speakReplies', config.speakReplies)) send({ type: 'notice', text: 'Не вдалося зберегти налаштування озвучення — воно діятиме до перезапуску.' });
+  if (!config.speakReplies && state === 'speaking') speech?.cancel();
+  send({ type: 'speak-setting', value: config.speakReplies });
+  rebuildTrayMenu();
+}
+
+// Один хід розмови: запит до моделі, відповідь у панель і (якщо ввімкнено) голосом
+async function runTurn(text) {
+  const generation = agent.generation;
+  const current = () => generation === agent.generation; // false, якщо посеред ходу почали нову розмову
   try {
     const reply = await agent.ask(text);
-    setState('idle');
-    if (!win.isFocused()) { showPanel({ focus: false }); scheduleAutoHide(); }
-    return { ok: true, text: reply };
+    if (!current()) return;
+    send({ type: 'assistant', text: reply });
+    if (config.speakReplies && speech?.ready && !SHOT) { // у режимі знімка для розробки мовчимо
+      setState('speaking');
+      try { await speech.speak(reply); } catch (e) { if (current()) send({ type: 'notice', text: `Не вдалося озвучити: ${e.message}` }); }
+    }
   } catch (e) {
     denyAllConfirms();
-    if (e.message === 'Скасовано') { setState('idle'); return { ok: false, cancelled: true }; }
-    setState('error');
-    // помилка — не постійний стан: за кілька секунд повертаємось до очікування
-    setTimeout(() => { if (state === 'error' && !agent.busy) setState('idle'); }, ERROR_SHOWN_MS);
-    if (!win.isFocused()) { showPanel({ focus: false }); scheduleAutoHide(); }
-    return { ok: false, error: e.message };
+    if (!current()) return;
+    if (e.message === 'Скасовано') send({ type: 'stopped' }); else showError(e.message);
+  } finally {
+    endTurn();
   }
+}
+
+function startTextTurn(text) {
+  if (turnActive) { send({ type: 'soft', text: 'Зачекай, я ще виконую попередній запит.' }); return; }
+  turnActive = true;
+  send({ type: 'busy', value: true });
+  runTurn(text);
+}
+
+// Голосовий хід: слухаємо до паузи, показуємо текст наживо, далі — як звичайний запит
+async function startListening() {
+  if (turnActive) return;
+  if (!speech?.ready) {
+    showPanel();
+    send({ type: 'soft', text: speech?.status === 'starting' ? 'Голос ще завантажується, зачекай кілька секунд.' : 'Голос зараз недоступний.' });
+    return;
+  }
+  turnActive = true;
+  send({ type: 'busy', value: true });
+  setState('listening');
+  showPanel({ focus: false });
+  const generation = agent.generation;
+  let heard;
+  try {
+    heard = await speech.listen((event) => {
+      if (event.type === 'partial') send({ type: 'partial', text: event.text });
+      else if (event.type === 'speech') send({ type: 'partial', text: '' });
+      else if (event.type === 'recognizing') setState('thinking');
+    });
+  } catch (e) {
+    send({ type: 'partial-end' });
+    showError(e.message);
+    endTurn();
+    return;
+  }
+  send({ type: 'partial-end' });
+  if (generation !== agent.generation || heard.cancelled || !heard.text) {
+    if (generation === agent.generation && !heard.cancelled) send({ type: 'soft', text: 'Нічого не почув.' });
+    endTurn();
+    return;
+  }
+  send({ type: 'user', text: heard.text });
+  await runTurn(heard.text);
 }
 
 // Приймаємо повідомлення лише від власної сторінки панелі
@@ -223,13 +320,20 @@ const trusted = (event) => event.senderFrame?.url === INDEX_URL && event.sender 
 function registerIpc() {
   ipcMain.handle('offgrid:ready', async (e) => {
     if (!trusted(e)) return null;
-    return { state, hotkey: activeHotkey, model: config.model, warnings, ollama: await ping(config) };
+    return {
+      state, busy: turnActive, hotkey: activeHotkey, model: config.model, warnings, speakReplies: config.speakReplies,
+      voice: { status: speech?.status ?? 'off', error: speech?.error ?? null }, ollama: await ping(config),
+    };
   });
-  ipcMain.handle('offgrid:ask', (e, text) => {
-    if (!trusted(e) || typeof text !== 'string') return { ok: false, error: 'Некоректний запит' };
-    return handleAsk(text);
+  ipcMain.on('offgrid:ask', (e, text) => {
+    if (trusted(e) && typeof text === 'string' && text.trim()) startTextTurn(text);
   });
-  ipcMain.on('offgrid:cancel', (e) => { if (trusted(e)) { agent.cancel(); denyAllConfirms(); } });
+  ipcMain.on('offgrid:listen', (e) => {
+    if (!trusted(e)) return;
+    if (state === 'listening') speech.stopListening(); else startListening();
+  });
+  ipcMain.on('offgrid:set-speak', (e, value) => { if (trusted(e)) setSpeakReplies(value === true); });
+  ipcMain.on('offgrid:cancel', (e) => { if (trusted(e)) cancelAll(); });
   ipcMain.on('offgrid:confirm', (e, id, allow) => {
     if (!trusted(e)) return;
     pendingConfirms.get(id)?.finish(allow === true);
@@ -242,12 +346,13 @@ function registerIpc() {
 async function devScreenshot() {
   showPanel();
   await new Promise((r) => setTimeout(r, 400));
+  for (let i = 0; i < 360 && speech?.status === 'starting'; i++) await new Promise((r) => setTimeout(r, 500));
   const phrase = process.env.OFFGRID_SHOT_ASK;
   if (phrase) {
     // справжній наскрізний запит: панель -> IPC -> агент -> модель -> панель
     await win.webContents.executeJavaScript(`document.getElementById('input').value = ${JSON.stringify(phrase)}; document.getElementById('form').requestSubmit();`);
     await new Promise((r) => setTimeout(r, 500));
-    for (let i = 0; i < 240 && (agent.busy || pendingConfirms.size > 0); i++) await new Promise((r) => setTimeout(r, 500));
+    for (let i = 0; i < 240 && (turnActive || pendingConfirms.size > 0); i++) await new Promise((r) => setTimeout(r, 500));
   } else {
     send({ type: 'demo' });
   }
@@ -265,7 +370,7 @@ async function devScreenshot() {
 // ---------- Запуск ----------
 app.on('second-instance', () => showPanel());
 app.on('window-all-closed', () => { /* застосунок живе в треї */ });
-app.on('will-quit', () => globalShortcut.unregisterAll());
+app.on('will-quit', () => { globalShortcut.unregisterAll(); speech?.stop(); });
 // Жодне вікно застосунку не має права щось відкривати чи кудись переходити
 app.on('web-contents-created', (_e, contents) => {
   contents.on('will-attach-webview', (e) => e.preventDefault());
@@ -296,10 +401,12 @@ app.whenReady().then(() => {
     },
   });
 
+  speech = new Speech({ onStatus: (s) => { send({ type: 'voice', status: s.status, error: s.error }); } });
+
   registerIpc();
   createWindow();
   createTray();
-  applyConfig();
+  applyConfig(); // тут же запускається мовний сервіс, якщо голос увімкнено
   logAction({ tool: 'app', args: {}, decision: 'auto', ok: true, message: 'Offgrid запущено' });
 
   win.webContents.once('did-finish-load', () => {

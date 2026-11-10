@@ -12,6 +12,7 @@
     <span id="state-label">Очікує</span>
     <span id="taint" hidden title="У цій розмові асистент бачив назви чи вміст файлів. Запис нотаток, пошук і відкриття сайтів тепер потребують твого дозволу. «Нова розмова» це скидає.">бачив файли</span>
     <span class="spacer"></span>
+    <button id="speak" type="button" hidden aria-pressed="true">🔊</button>
     <button id="new-chat" type="button" title="Нова розмова: очистити історію">Нова розмова</button>
     <button id="close" type="button" title="Сховати (Esc)" aria-label="Сховати">✕</button>
   </header>
@@ -29,7 +30,8 @@
   </section>
 
   <form id="form" autocomplete="off">
-    <input id="input" type="text" maxlength="2000" placeholder="Напиши команду…" aria-label="Команда">
+    <input id="input" type="text" maxlength="2000" placeholder="Напиши або скажи команду…" aria-label="Команда">
+    <button id="mic" type="button" hidden aria-label="Говорити">🎤</button>
     <button id="send" type="submit" class="primary" title="Надіслати (Enter)">➤</button>
   </form>
   <footer id="hint"></footer>

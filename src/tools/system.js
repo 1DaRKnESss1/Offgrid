@@ -32,9 +32,11 @@ export default [
     }),
     run() {
       const now = new Date();
+      // готові для вимови поля: з «10.11.2026, 22:23:05» модель складала нісенітниці
       return {
         ok: true,
-        now: now.toLocaleString('uk-UA'),
+        time: now.toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' }),
+        date: now.toLocaleDateString('uk-UA', { day: 'numeric', month: 'long', year: 'numeric' }),
         weekday: now.toLocaleDateString('uk-UA', { weekday: 'long' }),
       };
     },

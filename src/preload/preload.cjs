@@ -2,7 +2,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('offgrid', {
-  ask: (text) => ipcRenderer.invoke('offgrid:ask', String(text)),
+  ask: (text) => ipcRenderer.send('offgrid:ask', String(text)),
+  listen: () => ipcRenderer.send('offgrid:listen'),
+  setSpeak: (value) => ipcRenderer.send('offgrid:set-speak', value === true),
   cancel: () => ipcRenderer.send('offgrid:cancel'),
   answerConfirm: (id, allow) => ipcRenderer.send('offgrid:confirm', String(id), allow === true),
   newChat: () => ipcRenderer.send('offgrid:new-chat'),

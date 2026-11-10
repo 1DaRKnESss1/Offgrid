@@ -8,7 +8,9 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test",
-    "smoke": "node scripts/smoke.js"
+    "smoke": "node scripts/smoke.js",
+    "speech-check": "node scripts/speech-check.js",
+    "speech-selftest": "python speech/selftest.py"
   },
   "devDependencies": {
     "electron": "^45.2.3"

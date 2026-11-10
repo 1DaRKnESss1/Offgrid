@@ -4,6 +4,16 @@
   "hotkey": "Control+Shift+Space",
   "speakReplies": true,
 
+  "speech": {
+    "enabled": true,
+    "python": "python.exe",
+    "whisperDir": "E:\\AI\\whisper",
+    "whisperModel": "medium",
+    "liveModel": "small",
+    "piperVoice": "E:\\AI\\piper\\uk_UA-mykyta-high.onnx",
+    "speed": 1.0
+  },
+
   "apps": {
     "notepad":    { "name": "Блокнот",     "exe": "notepad.exe", "process": "Notepad.exe" },
     "calculator": { "name": "Калькулятор", "exe": "calc.exe",    "process": "CalculatorApp.exe" },

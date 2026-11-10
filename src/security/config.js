@@ -21,7 +21,7 @@ const OPENABLE = new Set([
 // Читати вміст можна лише з простих текстових форматів
 const READABLE = new Set(['.txt', '.md', '.csv', '.log', '.json', '.xml', '.ini', '.yml', '.yaml']);
 const CONFIRM_MODES = ['never', 'content', 'tainted', 'always'];
-const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'speakReplies', 'apps', 'folders', 'fileTypes', 'readableTypes', 'confirm']);
+const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'speakReplies', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'confirm']);
 
 const WINDIR = process.env.SystemRoot ?? 'C:\\Windows';
 
@@ -79,6 +79,35 @@ function forbiddenFolder(real) {
   return null;
 }
 
+const MODEL_NAME = /^[a-z0-9][a-z0-9._-]{0,40}$/i;
+
+// Голос. Якщо щось не так — голос вимикається з поясненням, а текстовий режим працює далі.
+function validateSpeech(raw, warn) {
+  const off = { enabled: false };
+  if (raw === undefined) return off;
+  if (!isObject(raw)) { warn('Розділ «speech» записано неправильно — голос вимкнено'); return off; }
+  if (raw.enabled === false) return off;
+  const python = resolveExe(raw.python);
+  if (!python) { warn(`speech.python: «${raw.python}» не знайдено — голос вимкнено`); return off; }
+  const dir = typeof raw.whisperDir === 'string' && DRIVE_PATH.test(path.resolve(raw.whisperDir)) ? path.resolve(raw.whisperDir) : null;
+  if (!dir || !fs.existsSync(dir)) { warn(`speech.whisperDir: папку «${raw.whisperDir}» не знайдено — голос вимкнено`); return off; }
+  const voice = typeof raw.piperVoice === 'string' && DRIVE_PATH.test(path.resolve(raw.piperVoice)) && /\.onnx$/i.test(raw.piperVoice)
+    ? path.resolve(raw.piperVoice) : null;
+  if (!voice || !fs.existsSync(voice)) { warn(`speech.piperVoice: файл голосу «${raw.piperVoice}» не знайдено — голос вимкнено`); return off; }
+  if (typeof raw.whisperModel !== 'string' || !MODEL_NAME.test(raw.whisperModel)) { warn('speech.whisperModel: потрібна назва моделі, наприклад medium — голос вимкнено'); return off; }
+  let liveModel = '';
+  if (typeof raw.liveModel === 'string' && raw.liveModel) {
+    if (MODEL_NAME.test(raw.liveModel)) liveModel = raw.liveModel;
+    else warn('speech.liveModel: некоректна назва — текст наживо вимкнено');
+  }
+  let speed = 1.0;
+  if (raw.speed !== undefined) {
+    if (typeof raw.speed === 'number' && raw.speed >= 0.5 && raw.speed <= 2) speed = raw.speed;
+    else warn('speech.speed: потрібне число від 0.5 до 2 — використано 1.0');
+  }
+  return { enabled: true, python, whisperDir: dir, whisperModel: raw.whisperModel, liveModel, piperVoice: voice, speed };
+}
+
 /**
  * Перевіряє сирі налаштування. Повертає { config, warnings }.
  * toolModes — { назва інструмента: типовий режим підтвердження } для перевірки розділу confirm.
@@ -103,6 +132,8 @@ export function validateConfig(raw, defaults, toolModes = null) {
 
   cfg.hotkey = typeof raw.hotkey === 'string' && raw.hotkey.trim() ? raw.hotkey.trim() : defaults.hotkey;
   cfg.speakReplies = typeof raw.speakReplies === 'boolean' ? raw.speakReplies : defaults.speakReplies;
+  // голос — не білий список: якщо розділу в файлі користувача немає, беремо типовий
+  cfg.speech = validateSpeech(raw.speech === undefined ? defaults.speech : raw.speech, warn);
 
   // Білі списки: якщо розділу немає або він не того типу — список ПОРОЖНІЙ, а не типовий
   const section = (key, check, empty) => {
@@ -166,6 +197,18 @@ export function validateConfig(raw, defaults, toolModes = null) {
     cfg.confirm[tool] = mode;
   }
   return { config: cfg, warnings };
+}
+
+/** Змінює один простий параметр у settings.json, не чіпаючи решти (для вимикача озвучення в панелі). */
+export function saveSetting(key, value) {
+  if (key !== 'speakReplies' || typeof value !== 'boolean') return false;
+  try {
+    const raw = readJson(SETTINGS_FILE);
+    if (!isObject(raw)) return false;
+    raw[key] = value;
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(raw, null, 2) + '\n', 'utf8');
+    return true;
+  } catch { return false; }
 }
 
 /**
