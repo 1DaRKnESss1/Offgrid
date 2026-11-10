@@ -13,10 +13,13 @@
     <span id="taint" hidden title="У цій розмові асистент бачив назви чи вміст файлів. Запис нотаток, пошук і відкриття сайтів тепер потребують твого дозволу. «Нова розмова» це скидає.">бачив файли</span>
     <span class="spacer"></span>
     <button id="speak" type="button" hidden aria-pressed="true">🔊</button>
-    <button id="new-chat" type="button" title="Нова розмова: очистити історію">Нова розмова</button>
+    <button id="open-settings" type="button" title="Налаштування: програми, папки, типи файлів, клавіша" aria-label="Налаштування">⚙</button>
+    <button id="open-log" type="button" title="Журнал дій" aria-label="Журнал дій">📋</button>
+    <button id="new-chat" type="button" title="Нова розмова: очистити історію" aria-label="Нова розмова">↺</button>
     <button id="close" type="button" title="Сховати (Esc)" aria-label="Сховати">✕</button>
   </header>
 
+  <div id="view-chat" class="view">
   <main id="log" aria-live="polite"></main>
 
   <section id="confirm" hidden>
@@ -35,7 +38,27 @@
     <button id="send" type="submit" class="primary" title="Надіслати (Enter)">➤</button>
   </form>
   <footer id="hint"></footer>
+  </div>
+
+  <section id="view-settings" class="view" hidden aria-label="Налаштування">
+    <div class="view-head">
+      <button id="settings-back" type="button">← Назад</button>
+      <span class="view-title">Налаштування</span>
+    </div>
+    <div id="settings-body" class="view-body"></div>
+  </section>
+
+  <section id="view-log" class="view" hidden aria-label="Журнал дій">
+    <div class="view-head">
+      <button id="log-back" type="button">← Назад</button>
+      <span class="view-title">Журнал дій</span>
+      <span class="spacer"></span>
+      <button id="log-refresh" type="button">Оновити</button>
+    </div>
+    <div id="log-body" class="view-body tab-body"></div>
+  </section>
 
   <script src="app.js"></script>
+  <script src="settings.js"></script>
 </body>
 </html>

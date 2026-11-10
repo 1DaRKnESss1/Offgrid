@@ -11,15 +11,16 @@ const KEY_RE = /^[a-z][a-z0-9_]{0,30}$/;
 const DRIVE_PATH = /^[a-zA-Z]:\\/;
 // Відкривати можна лише типи з цього переліку: документи, зображення, звук, відео, простий текст.
 // Це «білий» перелік: усе інше (програми, скрипти, ярлики, веб-сторінки, архіви) дозволити не можна.
-const OPENABLE = new Set([
-  '.txt', '.md', '.csv', '.log', '.json', '.xml', '.ini', '.yml', '.yaml',
-  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.ods', '.odp', '.rtf', '.epub', '.djvu',
-  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.heic',
-  '.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac',
-  '.mp4', '.mkv', '.avi', '.mov', '.webm', '.wmv',
-]);
+export const FILE_TYPE_GROUPS = [
+  { title: 'Документи', types: ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.ods', '.odp', '.rtf', '.epub', '.djvu'] },
+  { title: 'Текст', types: ['.txt', '.md', '.csv', '.log', '.json', '.xml', '.ini', '.yml', '.yaml'] },
+  { title: 'Зображення', types: ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.heic'] },
+  { title: 'Звук', types: ['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac'] },
+  { title: 'Відео', types: ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.wmv'] },
+];
+export const OPENABLE = new Set(FILE_TYPE_GROUPS.flatMap((g) => g.types));
 // Читати вміст можна лише з простих текстових форматів
-const READABLE = new Set(['.txt', '.md', '.csv', '.log', '.json', '.xml', '.ini', '.yml', '.yaml']);
+export const READABLE = new Set(['.txt', '.md', '.csv', '.log', '.json', '.xml', '.ini', '.yml', '.yaml']);
 const CONFIRM_MODES = ['never', 'content', 'tainted', 'always'];
 const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'speakReplies', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'confirm']);
 

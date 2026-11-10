@@ -97,6 +97,7 @@ function setHint() {
 }
 
 function showConfirm(event) {
+  window.offgridView?.show('chat'); // запит дозволу має бути видно, де б ти не був
   confirmId = event.id;
   $('confirm-summary').textContent = event.summary;
   $('confirm-reason').textContent = event.reason === 'tainted'
@@ -139,7 +140,7 @@ function applyVoice(event) {
 window.offgrid.onEvent((event) => {
   switch (event.type) {
     case 'state': setState(event.state); break;
-    case 'busy': setBusy(event.value); break;
+    case 'busy': setBusy(event.value); if (event.value && window.offgridView?.current !== 'chat') window.offgridView.show('chat'); break;
     case 'user': endLive(); add('user', event.text); break;
     case 'assistant': add('assistant', event.text); break;
     case 'error': add('error', event.text); break;
@@ -156,7 +157,8 @@ window.offgrid.onEvent((event) => {
     case 'speak-setting': speakReplies = event.value; renderControls(); break;
     case 'notice': add('notice', event.text); break;
     case 'reset': hideConfirm(); showEmpty(); setBusy(false); break;
-    case 'focus-input': input.focus(); break;
+    case 'focus-input': if ((window.offgridView?.current ?? 'chat') === 'chat') input.focus(); break;
+    case 'open-view': window.offgridView?.show(event.view, { tab: event.tab }); break;
     case 'demo': // лише для знімка під час розробки
       add('user', 'закрий блокнот');
       add('tool', 'Блокнот відкрито');
@@ -190,6 +192,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   e.preventDefault();
   if (confirmId) answerConfirm(false);
+  else if (window.offgridView && window.offgridView.current !== 'chat') window.offgridView.show('chat');
   else if (busy) window.offgrid.cancel();
   else window.offgrid.hide();
 });

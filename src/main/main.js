@@ -1,5 +1,5 @@
 // Головний процес Offgrid: трей, панель, гаряча клавіша, зв'язок панелі з агентом.
-import { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, nativeImage, screen, shell, session } from 'electron';
+import { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, nativeImage, screen, shell, session, dialog } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -7,7 +7,8 @@ import { pathToFileURL } from 'node:url';
 import { ROOT, DATA_DIR, ELECTRON_DATA, SETTINGS_FILE, LOG_FILE, NOTES_DIR } from '../paths.js';
 import { loadConfig, saveSetting } from '../security/config.js';
 import { TOOL_MODES } from '../security/policy.js';
-import { logAction } from '../security/log.js';
+import { logAction, readLog } from '../security/log.js';
+import { editSettings, settingsView, isValidHotkey } from '../security/settings-store.js';
 import { Agent } from '../agent/agent.js';
 import { ping } from '../agent/ollama.js';
 import { nodeOs } from '../tools/util.js';
@@ -25,8 +26,10 @@ const FALLBACK_HOTKEYS = ['Control+Shift+Space', 'Alt+Shift+Space', 'Control+Alt
 const SHOT = process.env.OFFGRID_SHOT; // лише для розробки: зберегти знімок панелі й вийти
 
 // Службові дані Electron теж тримаємо всередині проєкту, а не в %APPDATA%
-fs.mkdirSync(ELECTRON_DATA, { recursive: true });
-app.setPath('userData', ELECTRON_DATA);
+// (режим знімка для розробки має власну папку, щоб не конфліктувати із запущеним застосунком)
+const USER_DATA = SHOT ? `${ELECTRON_DATA}-dev` : ELECTRON_DATA;
+fs.mkdirSync(USER_DATA, { recursive: true });
+app.setPath('userData', USER_DATA);
 // Відеопам'яті впритул через модель — панель малюється на процесорі
 if (!SHOT) app.disableHardwareAcceleration();
 app.setAppUserModelId('local.offgrid.assistant');
@@ -41,6 +44,7 @@ let hideTimer = null;
 let activeHotkey = null;
 let quitting = false;
 let turnActive = false; // триває запис, запит до моделі або озвучення
+let dialogOpen = false; // відкрито системне вікно вибору файлу: панель у цей час не ховаємо
 let turnCancelled = false; // користувач зупинив поточний хід (Esc, ■, «Нова розмова»)
 let speech = null;
 let speechConfigKey = '';
@@ -126,7 +130,7 @@ function createWindow() {
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.on('blur', () => {
-    if ((state === 'idle' || state === 'error') && pendingConfirms.size === 0 && !SHOT) hidePanel();
+    if ((state === 'idle' || state === 'error') && pendingConfirms.size === 0 && !dialogOpen && !SHOT) hidePanel();
   });
   win.on('close', (e) => {
     if (!quitting) { e.preventDefault(); hidePanel(); }
@@ -182,7 +186,9 @@ function applyConfig({ announce = false } = {}) {
   // мовний сервіс перезапускаємо лише тоді, коли змінилися саме його налаштування
   const key = JSON.stringify(config.speech);
   // …або коли він не запустився чи впав: «Перечитати налаштування» дає йому ще одну спробу
-  if (speech && (key !== speechConfigKey || (announce && speech.status === 'failed'))) { speechConfigKey = key; speech.start(config.speech); }
+  // у режимі знімка для розробки моделі мовлення не вантажимо, якщо не просили справжній запит
+  const skipSpeech = SHOT && !process.env.OFFGRID_SHOT_ASK;
+  if (speech && !skipSpeech && (key !== speechConfigKey || (announce && speech.status === 'failed'))) { speechConfigKey = key; speech.start(config.speech); }
   rebuildTrayMenu();
 
   // при старті панель сама забирає це через offgrid:ready
@@ -207,9 +213,12 @@ function rebuildTrayMenu() {
     { label: 'Нова розмова', click: () => newChat() },
     { label: 'Озвучувати відповіді', type: 'checkbox', checked: !!config?.speakReplies, enabled: !!config?.speech?.enabled, click: (item) => setSpeakReplies(item.checked) },
     { type: 'separator' },
-    { label: 'Відкрити налаштування (settings.json)', click: () => shell.openPath(SETTINGS_FILE) },
+    { label: 'Налаштування…', click: () => { showPanel(); send({ type: 'open-view', view: 'settings' }); } },
+    { label: 'Журнал дій…', click: () => { showPanel(); send({ type: 'open-view', view: 'log' }); } },
+    { type: 'separator' },
+    { label: 'Відкрити файл налаштувань (settings.json)', click: () => shell.openPath(SETTINGS_FILE) },
     { label: 'Перечитати налаштування', click: () => { applyConfig({ announce: true }); showPanel(); } },
-    { label: 'Відкрити журнал дій', click: () => (fs.existsSync(LOG_FILE) ? shell.openPath(LOG_FILE) : shell.openPath(DATA_DIR)) },
+    { label: 'Відкрити файл журналу', click: () => (fs.existsSync(LOG_FILE) ? shell.openPath(LOG_FILE) : shell.openPath(DATA_DIR)) },
     { label: 'Відкрити папку нотаток', click: () => { fs.mkdirSync(NOTES_DIR, { recursive: true }); shell.openPath(NOTES_DIR); } },
     { type: 'separator' },
     { label: 'Вийти', click: () => { quitting = true; app.quit(); } },
@@ -321,6 +330,63 @@ async function startListening() {
   await runTurn(heard.text);
 }
 
+// ---------- Налаштування з панелі ----------
+// Шлях до програми чи папки обирає користувач у системному вікні; панель його не передає.
+async function pickPath(kind) {
+  dialogOpen = true;
+  try {
+    const res = await dialog.showOpenDialog(win, kind === 'exe'
+      ? { title: 'Яку програму дозволити асистенту?', properties: ['openFile'], filters: [{ name: 'Програми', extensions: ['exe'] }] }
+      : { title: 'Яку папку дозволити асистенту?', properties: ['openDirectory'] });
+    return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0];
+  } finally {
+    dialogOpen = false;
+    if (!quitting && win && !win.isDestroyed()) { win.show(); win.focus(); }
+  }
+}
+
+function changeSettings(change, payload) {
+  const result = editSettings(change, payload, TOOL_MODES);
+  logAction({ tool: 'settings', args: { change, ...payload }, decision: 'user', ok: result.ok, ...(result.ok ? {} : { error: result.error }) });
+  if (result.ok) {
+    applyConfig();
+    send({ type: 'config', hotkey: activeHotkey, model: config.model, speakReplies: config.speakReplies, warnings: [] });
+  }
+  return result;
+}
+
+function changeHotkey(hotkey) {
+  if (!isValidHotkey(hotkey)) return { ok: false, error: 'Потрібне сполучення на кшталт Ctrl + Shift + Space: модифікатор і одна клавіша' };
+  // спершу перевіряємо, чи Windows віддасть нам це сполучення, і лише тоді записуємо
+  globalShortcut.unregisterAll();
+  let free = false;
+  try { free = globalShortcut.register(hotkey, onHotkey); } catch { free = false; }
+  if (!free) {
+    applyConfig(); // повертаємо попередню клавішу
+    return { ok: false, error: 'Це сполучення вже зайняте іншою програмою або Windows. Спробуй інше.' };
+  }
+  return changeSettings('setHotkey', { hotkey });
+}
+
+const SIMPLE_CHANGES = new Set(['updateApp', 'removeApp', 'updateFolder', 'removeFolder', 'setFileType']);
+
+async function handleSettings(action, payload) {
+  let result = { ok: true };
+  const data = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  if (action === 'addApp' || action === 'addFolder') {
+    if (dialogOpen) return null;
+    const picked = await pickPath(action === 'addApp' ? 'exe' : 'dir');
+    if (picked) result = changeSettings(action, action === 'addApp' ? { exe: picked } : { dir: picked });
+  } else if (action === 'setHotkey') {
+    result = changeHotkey(data.hotkey);
+  } else if (SIMPLE_CHANGES.has(action)) {
+    result = changeSettings(action, data);
+  } else if (action !== 'get') {
+    result = { ok: false, error: 'Невідома дія' };
+  }
+  return { ...result, view: settingsView(config, warnings), activeHotkey };
+}
+
 // Приймаємо повідомлення лише від власної сторінки панелі
 const trusted = (event) => event.senderFrame?.url === INDEX_URL && event.sender === win?.webContents;
 
@@ -348,19 +414,25 @@ function registerIpc() {
   });
   ipcMain.on('offgrid:new-chat', (e) => { if (trusted(e)) newChat(); });
   ipcMain.on('offgrid:hide', (e) => { if (trusted(e)) hidePanel(); });
+  ipcMain.handle('offgrid:settings', (e, action, payload) => (trusted(e) && typeof action === 'string' ? handleSettings(action, payload) : null));
+  ipcMain.handle('offgrid:log', (e) => (trusted(e) ? readLog(150) : []));
 }
 
 // ---------- Знімок для розробки ----------
 async function devScreenshot() {
   showPanel();
   await new Promise((r) => setTimeout(r, 400));
-  for (let i = 0; i < 360 && speech?.status === 'starting'; i++) await new Promise((r) => setTimeout(r, 500));
+  for (let i = 0; i < 360 && speech?.status === 'starting' && process.env.OFFGRID_SHOT_ASK; i++) await new Promise((r) => setTimeout(r, 500));
   const phrase = process.env.OFFGRID_SHOT_ASK;
   if (phrase) {
     // справжній наскрізний запит: панель -> IPC -> агент -> модель -> панель
     await win.webContents.executeJavaScript(`document.getElementById('input').value = ${JSON.stringify(phrase)}; document.getElementById('form').requestSubmit();`);
     await new Promise((r) => setTimeout(r, 500));
     for (let i = 0; i < 240 && (turnActive || pendingConfirms.size > 0); i++) await new Promise((r) => setTimeout(r, 500));
+  } else if (process.env.OFFGRID_SHOT_VIEW) {
+    const [view, tab] = process.env.OFFGRID_SHOT_VIEW.split(':');
+    send({ type: 'open-view', view, tab });
+    await new Promise((r) => setTimeout(r, 600));
   } else {
     send({ type: 'demo' });
   }
@@ -415,7 +487,7 @@ app.whenReady().then(() => {
   createWindow();
   createTray();
   applyConfig(); // тут же запускається мовний сервіс, якщо голос увімкнено
-  logAction({ tool: 'app', args: {}, decision: 'auto', ok: true, message: 'Offgrid запущено' });
+  if (!SHOT) logAction({ tool: 'app', args: {}, decision: 'auto', ok: true, message: 'Offgrid запущено' });
 
   win.webContents.once('did-finish-load', () => {
     if (SHOT) devScreenshot(); else showPanel();

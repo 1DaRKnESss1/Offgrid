@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('offgrid', {
   newChat: () => ipcRenderer.send('offgrid:new-chat'),
   hide: () => ipcRenderer.send('offgrid:hide'),
   ready: () => ipcRenderer.invoke('offgrid:ready'),
+  settings: (action, payload) => ipcRenderer.invoke('offgrid:settings', String(action), payload),
+  log: () => ipcRenderer.invoke('offgrid:log'),
   onEvent: (handler) => {
     ipcRenderer.on('offgrid:event', (_e, event) => handler(event));
   },
