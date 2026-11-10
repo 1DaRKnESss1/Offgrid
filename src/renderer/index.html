@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+  <title>Offgrid</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-state="idle">
+  <header>
+    <span class="dot" aria-hidden="true"></span>
+    <span id="state-label">Очікує</span>
+    <span id="taint" hidden title="У цій розмові асистент читав назви чи вміст файлів. Запис нотаток і відкриття сайтів тепер потребують твого дозволу. «Нова розмова» це скидає.">читав файли</span>
+    <span class="spacer"></span>
+    <button id="new-chat" type="button" title="Нова розмова: очистити історію">Нова розмова</button>
+    <button id="close" type="button" title="Сховати (Esc)" aria-label="Сховати">✕</button>
+  </header>
+
+  <main id="log" aria-live="polite"></main>
+
+  <section id="confirm" hidden>
+    <div class="confirm-title">Потрібен твій дозвіл</div>
+    <div id="confirm-summary"></div>
+    <div id="confirm-reason"></div>
+    <div class="confirm-buttons">
+      <button id="confirm-allow" type="button" class="primary">Дозволити</button>
+      <button id="confirm-deny" type="button">Відхилити</button>
+    </div>
+  </section>
+
+  <form id="form" autocomplete="off">
+    <input id="input" type="text" maxlength="2000" placeholder="Напиши команду…" aria-label="Команда">
+    <button id="send" type="submit" class="primary" title="Надіслати (Enter)">➤</button>
+  </form>
+  <footer id="hint"></footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
