@@ -57,7 +57,7 @@ from piper.config import PhonemeType, SynthesisConfig
 
 # ---------- Налаштування ----------
 HOST = "127.0.0.1"
-PORT = int(os.environ.get("OFFGRID_SPEECH_PORT", "5006"))
+PORT = int(os.environ.get("OFFGRID_SPEECH_PORT", "0"))  # 0 — система сама дасть вільний порт
 TOKEN = os.environ.get("OFFGRID_SPEECH_TOKEN", "")
 WHISPER_MODEL = os.environ.get("OFFGRID_WHISPER_MODEL", "medium")          # остаточний текст
 WHISPER_LIVE_MODEL = os.environ.get("OFFGRID_WHISPER_LIVE_MODEL", "small")  # чернетка наживо; "" — вимкнути
@@ -72,6 +72,7 @@ SILENCE_TO_STOP_S = 1.4    # стільки тиші після мови = кі�
 MAX_RECORD_S = 20          # максимальна довжина фрази
 WAIT_FOR_SPEECH_S = 8      # якщо стільки мовчиш — повертаємо порожній текст
 MIN_THRESHOLD = 0.01       # мінімальний поріг гучності (RMS)
+MAX_THRESHOLD = 0.04       # вище не піднімаємо: інакше після шумного старту асистент «оглухне»
 PARTIAL_EVERY_S = 0.8      # як часто оновлювати проміжний текст
 MAX_SPEAK_CHARS = 1500
 BLOCK = int(SAMPLE_RATE * BLOCK_S)
@@ -124,13 +125,21 @@ THRESHOLD = MIN_THRESHOLD
 MIC_ERROR = None
 
 
+def set_threshold(levels):
+    """Поріг мови = утричі вище за фоновий шум. Шум беремо як тихіші 20% виміряних відрізків,
+    тож окремі гучні звуки (музика, голос) його не завищують; до того ж поріг обмежено зверху."""
+    global THRESHOLD
+    if len(levels) >= 10:
+        THRESHOLD = min(MAX_THRESHOLD, max(MIN_THRESHOLD, float(np.percentile(levels, 20)) * 3))
+
+
 def calibrate():
     """Міряє фоновий шум 1 секунду і виставляє поріг, з якого звук вважається мовою."""
-    global THRESHOLD, MIC_ERROR
+    global MIC_ERROR
     try:
         with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", blocksize=BLOCK) as s:
             noise = [float(np.sqrt(np.mean(s.read(BLOCK)[0] ** 2))) for _ in range(int(1 / BLOCK_S))]
-        THRESHOLD = max(MIN_THRESHOLD, float(np.median(noise)) * 3)
+        set_threshold(noise)
         MIC_ERROR = None
         log(f"Мікрофон відкалібровано, поріг гучності {THRESHOLD:.4f}")
     except Exception as e:  # noqa: BLE001
@@ -156,9 +165,10 @@ def listen(emit):
         if MIC_ERROR:
             emit({"type": "error", "error": MIC_ERROR})
             return
-    STOP_LISTEN.clear()
-    CANCEL_LISTEN.clear()
+    # Прапорці STOP/CANCEL тут НЕ скидаємо: їх ставлять лише під час запису й прибирають після нього
+    # (див. _listen_stream), тож «скасувати», надіслане в першу ж мить, не загубиться.
     chunks, started, silence, waited, total = [], False, 0.0, 0.0, 0.0
+    quiet_levels = []  # гучність, поки чекали на мову: з неї уточнюємо поріг
     pre_roll = deque(maxlen=int(PRE_ROLL_S / BLOCK_S))
     finished = threading.Event()   # після цього проміжні результати вже не надсилаємо
     partial_busy = threading.Event()
@@ -191,9 +201,11 @@ def listen(emit):
                         chunks.append(data.copy())
                         emit({"type": "speech"})
                     elif waited > WAIT_FOR_SPEECH_S:
+                        set_threshold(quiet_levels)  # нічого не почули — можливо, поріг застарів
                         break
                     else:
                         pre_roll.append(data.copy())
+                        quiet_levels.append(rms)
                     continue
                 chunks.append(data.copy())
                 total += BLOCK_S
@@ -234,7 +246,6 @@ def listen(emit):
 
 def speak(text):
     """Озвучує текст по реченнях: звук починається, щойно готове перше. Повертає (first_audio_s, audio_s, interrupted)."""
-    CANCEL_SPEAK.clear()
     if LOWERCASE_TEXT:
         text = text.lower()
     t = time.perf_counter()
@@ -293,6 +304,13 @@ class Handler(BaseHTTPRequestHandler):
         if not LISTEN_LOCK.acquire(blocking=False):
             return self._json(409, {"ok": False, "error": "Я вже слухаю"})
         try:
+            # слухати й говорити одночасно не можна: інакше асистент запише власний голос як команду
+            if SPEAK_LOCK.locked():
+                CANCEL_SPEAK.set()
+                for _ in range(40):
+                    if not SPEAK_LOCK.locked():
+                        break
+                    time.sleep(0.05)
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -311,6 +329,8 @@ class Handler(BaseHTTPRequestHandler):
 
             listen(emit)
         finally:
+            STOP_LISTEN.clear()
+            CANCEL_LISTEN.clear()
             LISTEN_LOCK.release()
             self.close_connection = True
 
@@ -321,11 +341,14 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/listen":
                 self._listen_stream()
             elif self.path == "/stop":
-                STOP_LISTEN.set()
+                if LISTEN_LOCK.locked():  # поза записом прапорець не ставимо, щоб не зачепити наступний
+                    STOP_LISTEN.set()
                 self._json(200, {"ok": True})
             elif self.path == "/cancel":
-                CANCEL_LISTEN.set()
-                CANCEL_SPEAK.set()
+                if LISTEN_LOCK.locked():
+                    CANCEL_LISTEN.set()
+                if SPEAK_LOCK.locked():
+                    CANCEL_SPEAK.set()
                 self._json(200, {"ok": True})
             elif self.path == "/speak":
                 length = min(int(self.headers.get("Content-Length", 0)), 64 * 1024)
@@ -337,6 +360,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     first_audio_s, audio_s, interrupted = speak(text)
                 finally:
+                    CANCEL_SPEAK.clear()
                     SPEAK_LOCK.release()
                 self._json(200, {"ok": True, "first_audio_s": first_audio_s, "audio_s": audio_s, "interrupted": interrupted})
             else:
@@ -352,6 +376,12 @@ class Handler(BaseHTTPRequestHandler):
         """Не засмічуємо вивід записом кожного запиту."""
 
 
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    # На Windows «повторне використання адреси» дозволило б іншій програмі сісти на той самий порт
+    allow_reuse_address = False
+
+
 def exit_with_parent():
     """Застосунок тримає наш stdin відкритим. Коли він закривається (навіть аварійно) — виходимо й ми."""
     try:
@@ -362,9 +392,8 @@ def exit_with_parent():
 
 
 if __name__ == "__main__":
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
-    server.daemon_threads = True
+    server = Server((HOST, PORT), Handler)
     threading.Thread(target=exit_with_parent, daemon=True).start()
     threading.Thread(target=calibrate, daemon=True).start()
-    log(f"READY http://{HOST}:{PORT}")
+    log(f"READY http://{HOST}:{server.server_address[1]}")
     server.serve_forever()

@@ -9,7 +9,7 @@ const TMP = path.join(path.dirname(fileURLToPath(import.meta.url)), '.tmp', `spe
 process.env.OFFGRID_DATA = path.join(TMP, 'data');
 
 const { validateConfig } = await import('../src/security/config.js');
-const { cleanForSpeech, Speech } = await import('../src/speech/client.js');
+const { cleanForSpeech, limitForSpeech, Speech } = await import('../src/speech/client.js');
 
 const defaults = JSON.parse(fs.readFileSync(new URL('../config/default.json', import.meta.url), 'utf8'));
 const voiceFile = path.join(TMP, 'voice.onnx');
@@ -62,6 +62,50 @@ test('голос: перед озвученням прибирається ро�
   assert.equal(cleanForSpeech('Дивись https://example.com/a?b=c тут'), 'Дивись посилання тут');
   assert.equal(cleanForSpeech('# Заголовок\n- пункт'), 'Заголовок - пункт');
   assert.equal(cleanForSpeech(null), '');
+});
+
+test('голос: задовгий текст обрізається по межі речення', () => {
+  const text = 'Перше речення. ' + 'Друге речення трохи довше! ' + 'х'.repeat(200);
+  assert.equal(limitForSpeech(text, 60), 'Перше речення. Друге речення трохи довше!');
+  assert.equal(limitForSpeech('коротко', 60), 'коротко');
+  assert.ok(limitForSpeech('слово '.repeat(100), 50).length <= 50);
+});
+
+test('голос: якщо сервіс падає під час запуску, стан стає «failed» з поясненням, а не висить', async () => {
+  // замість Python запускаємо node з крихітним скриптом, який одразу завершується з помилкою
+  const script = path.join(TMP, 'crash.js');
+  fs.writeFileSync(script, "console.error('немає пакета piper'); process.exit(3);");
+  const statuses = [];
+  const speech = new Speech({ onStatus: (s) => statuses.push(s) });
+  await speech.start({ ...good, python: process.execPath }, { script, interpreterArgs: [] });
+  assert.deepEqual(statuses.map((s) => s.status), ['starting', 'failed']);
+  assert.match(statuses[1].error, /код 3/);
+  assert.match(statuses[1].error, /немає пакета piper/);
+  assert.equal(speech.child, null);
+});
+
+test('голос: сервіс стартує, повідомляє порт, а новий start() зупиняє попередній процес', async () => {
+  // фальшивий сервіс: друкує рядок READY і живе, доки відкритий stdin (як справжній)
+  const script = path.join(TMP, 'fake.js');
+  fs.writeFileSync(script, "console.log('READY http://127.0.0.1:45678'); process.stdin.resume(); process.stdin.on('end', () => process.exit(0));");
+  const speech = new Speech();
+  await speech.start({ ...good, python: process.execPath }, { script, interpreterArgs: [] });
+  assert.equal(speech.status, 'ready');
+  assert.equal(speech.base, 'http://127.0.0.1:45678');
+  const first = speech.child;
+  const gone = new Promise((resolve) => first.once('exit', resolve));
+  // два запуски поспіль: перший має відступити, не лишивши процесу
+  const a = speech.start({ ...good, python: process.execPath }, { script, interpreterArgs: [] });
+  const b = speech.start({ ...good, python: process.execPath }, { script, interpreterArgs: [] });
+  await Promise.all([a, b, gone]);
+  assert.equal(speech.status, 'ready');
+  assert.notEqual(speech.child, first);
+  const last = speech.child;
+  const stopped = new Promise((resolve) => last.once('exit', resolve));
+  await speech.stop();
+  await stopped;
+  assert.equal(speech.status, 'off');
+  assert.equal(speech.child, null);
 });
 
 test('голос: без запущеного сервісу клієнт відмовляє зрозуміло й нічого не запускає', async () => {

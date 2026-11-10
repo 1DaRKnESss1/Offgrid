@@ -1,28 +1,16 @@
 // Клієнт мовного сервісу: запускає speech/speech_server.py і розмовляє з ним через 127.0.0.1.
-// Сервіс отримує одноразовий токен; без нього він не відповідає нікому, крім цього застосунку.
+// Сервіс сам обирає вільний порт і отримує одноразовий токен; без токена він не відповідає нікому.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import net from 'node:net';
 import path from 'node:path';
 import { ROOT } from '../paths.js';
 
 const SCRIPT = path.join(ROOT, 'speech', 'speech_server.py');
 const START_TIMEOUT_MS = 180_000; // перше завантаження моделей із диска буває довгим
-const SPEAK_TIMEOUT_MS = 120_000;
 const LISTEN_TIMEOUT_MS = 90_000;
+const MAX_SPEAK_CHARS = 1200;
 
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.once('error', reject);
-    srv.listen(0, '127.0.0.1', () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-  });
-}
-
-/** Прибирає те, що голос не має зачитувати: розмітку, емодзі, зайві пробіли. */
+/** Прибирає те, що голос не має зачитувати: розмітку, посилання, емодзі, зайві пробіли. */
 export function cleanForSpeech(text) {
   return String(text ?? '')
     .replace(/https?:\/\/\S+/g, ' посилання ')
@@ -30,6 +18,14 @@ export function cleanForSpeech(text) {
     .replace(/\p{Extended_Pictographic}/gu, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** Задовгий текст обрізаємо по межі речення, а не посеред слова. */
+export function limitForSpeech(text, max = MAX_SPEAK_CHARS) {
+  if (text.length <= max) return text;
+  const head = text.slice(0, max);
+  const end = Math.max(head.lastIndexOf('. '), head.lastIndexOf('! '), head.lastIndexOf('? '));
+  return (end > max * 0.4 ? head.slice(0, end + 1) : head.slice(0, head.lastIndexOf(' '))).trim();
 }
 
 export class Speech {
@@ -42,7 +38,7 @@ export class Speech {
     this.base = null;
     this.token = null;
     this.listening = null; // AbortController поточного запису
-    this.speaking = false;
+    this.startId = 0;      // зростає з кожним start()/stop(): застарілий запуск бачить це й відступає
   }
 
   get ready() { return this.status === 'ready'; }
@@ -53,83 +49,112 @@ export class Speech {
     this.onStatus({ status, error });
   }
 
-  async start(cfg) {
-    await this.stop();
-    if (!cfg?.enabled) { this.#set('off'); return; }
-    this.#set('starting');
-    let port;
-    try { port = await freePort(); } catch (e) { this.#set('failed', `Немає вільного порту: ${e.message}`); return; }
-    this.token = randomBytes(24).toString('hex');
-    this.base = `http://127.0.0.1:${port}`;
-
-    const child = spawn(cfg.python, ['-u', SCRIPT], {
-      cwd: path.dirname(SCRIPT),
-      windowsHide: true,
-      shell: false,
-      // stdin лишаємо відкритим: сервіс завершується сам, щойно він закриється (тобто коли зникне застосунок)
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        PYTHONIOENCODING: 'utf-8',
-        OFFGRID_SPEECH_PORT: String(port),
-        OFFGRID_SPEECH_TOKEN: this.token,
-        OFFGRID_WHISPER_DIR: cfg.whisperDir,
-        OFFGRID_WHISPER_MODEL: cfg.whisperModel,
-        OFFGRID_WHISPER_LIVE_MODEL: cfg.liveModel ?? '',
-        OFFGRID_PIPER_VOICE: cfg.piperVoice,
-        OFFGRID_SPEECH_SPEED: String(cfg.speed ?? 1),
-      },
-    });
-    this.child = child;
-    let tail = '';
-    const started = new Promise((resolve) => {
-      const timer = setTimeout(() => resolve('Мовний сервіс не встиг запуститися'), START_TIMEOUT_MS);
-      const done = (err) => { clearTimeout(timer); resolve(err); };
-      child.stdout.setEncoding('utf8');
-      child.stderr.setEncoding('utf8');
-      child.stdout.on('data', (d) => { if (d.includes('READY ')) done(null); });
-      child.stderr.on('data', (d) => { tail = (tail + d).slice(-600); });
-      child.once('error', (e) => done(`Не вдалося запустити Python: ${e.message}`));
-      child.once('exit', (code) => done(`Мовний сервіс завершився (код ${code}). ${tail.trim().split(/\r?\n/).pop() ?? ''}`.trim()));
-    });
-    child.once('exit', () => {
-      if (this.child !== child) return;
-      this.child = null;
-      this.listening?.abort();
-      if (this.status === 'ready') this.#set('failed', 'Мовний сервіс несподівано зупинився');
-    });
-
-    const err = await started;
-    if (this.child !== child) return; // за цей час сервіс зупинили або перезапустили
-    if (err) { this.#kill(child); this.child = null; this.#set('failed', err); return; }
-    this.#set('ready');
-  }
-
   #kill(child) {
     try { child.stdin?.end(); } catch { /* вже закрито */ }
     try { child.kill(); } catch { /* вже завершився */ }
   }
 
-  async stop() {
+  #dropChild() {
     const child = this.child;
     this.child = null;
+    this.base = null;
     this.listening?.abort();
     if (child) this.#kill(child);
+  }
+
+  // script та interpreterArgs підміняються лише в тестах
+  async start(cfg, { script = SCRIPT, interpreterArgs = ['-u'] } = {}) {
+    const id = ++this.startId;
+    this.#dropChild();
+    if (!cfg?.enabled) { this.#set('off'); return; }
+    this.#set('starting');
+    this.token = randomBytes(24).toString('hex');
+
+    let child;
+    try {
+      child = spawn(cfg.python, [...interpreterArgs, script], {
+        cwd: path.dirname(script),
+        windowsHide: true,
+        shell: false,
+        // stdin лишаємо відкритим: сервіс завершується сам, щойно він закриється (тобто коли зникне застосунок)
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          PYTHONIOENCODING: 'utf-8',
+          OFFGRID_SPEECH_PORT: '0', // сервіс сам займе вільний порт і повідомить його в рядку READY
+          OFFGRID_SPEECH_TOKEN: this.token,
+          OFFGRID_WHISPER_DIR: cfg.whisperDir,
+          OFFGRID_WHISPER_MODEL: cfg.whisperModel,
+          OFFGRID_WHISPER_LIVE_MODEL: cfg.liveModel ?? '',
+          OFFGRID_PIPER_VOICE: cfg.piperVoice,
+          OFFGRID_SPEECH_SPEED: String(cfg.speed ?? 1),
+        },
+      });
+    } catch (e) {
+      if (id === this.startId) this.#set('failed', `Не вдалося запустити Python: ${e.message}`);
+      return;
+    }
+    this.child = child;
+    let exited = false;
+    let errTail = '';
+    let out = '';
+
+    // Чекаємо на рядок «READY http://127.0.0.1:<порт>» або на завершення процесу
+    const result = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve({ error: 'Мовний сервіс не встиг запуститися' }), START_TIMEOUT_MS);
+      const done = (value) => { clearTimeout(timer); resolve(value); };
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', (d) => {
+        if (out === null) return;
+        out = (out + d).slice(-2000);
+        const m = out.match(/READY http:\/\/127\.0\.0\.1:(\d{2,5})\b/);
+        if (m) { out = null; done({ port: Number(m[1]) }); }
+      });
+      child.stderr.on('data', (d) => { errTail = (errTail + d).slice(-800); });
+      child.once('error', (e) => done({ error: `Не вдалося запустити Python: ${e.message}` }));
+      child.once('exit', (code) => {
+        exited = true;
+        const last = errTail.trim().split(/\r?\n/).pop() ?? '';
+        done({ error: `Мовний сервіс завершився під час запуску (код ${code}). ${last}`.trim() });
+      });
+    });
+
+    if (id !== this.startId) { this.#kill(child); return; } // за цей час сервіс зупинили або запустили знову
+    if (result.error || exited) {
+      this.#kill(child);
+      this.child = null;
+      this.#set('failed', result.error ?? 'Мовний сервіс завершився під час запуску');
+      return;
+    }
+    this.base = `http://127.0.0.1:${result.port}`;
+    child.once('exit', () => {
+      if (this.child !== child) return;
+      this.child = null;
+      this.base = null;
+      this.listening?.abort();
+      this.#set('failed', 'Мовний сервіс несподівано зупинився');
+    });
+    this.#set('ready');
+  }
+
+  async stop() {
+    this.startId++;
+    this.#dropChild();
     if (this.status !== 'off') this.#set('off');
   }
 
-  async #post(route, body, signal) {
-    const res = await fetch(this.base + route, {
+  #post(route, body, signal) {
+    return fetch(this.base + route, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Offgrid-Token': this.token },
       body: JSON.stringify(body ?? {}),
       signal,
     });
-    return res;
   }
 
   /**
-   * Слухає мікрофон до паузи. onEvent отримує { type: 'listening' | 'speech' | 'partial', text? }.
+   * Слухає мікрофон до паузи. onEvent отримує { type: 'listening' | 'speech' | 'recognizing' | 'partial', text? }.
    * Повертає { text } (порожній, якщо нічого не сказано), { cancelled: true } або кидає помилку.
    */
   async listen(onEvent = () => {}) {
@@ -161,7 +186,7 @@ export class Speech {
       throw new Error('Мовний сервіс обірвав запис');
     } catch (e) {
       if (abort.signal.aborted) return { cancelled: true };
-      if (e.name === 'TimeoutError') throw new Error('Запис тривав надто довго');
+      if (e.name === 'TimeoutError') { this.#post('/cancel').catch(() => {}); throw new Error('Запис тривав надто довго'); }
       throw e;
     } finally {
       this.listening = null;
@@ -173,24 +198,27 @@ export class Speech {
     if (this.listening && this.ready) this.#post('/stop').catch(() => {});
   }
 
-  /** Скасувати запис і замовкнути. */
+  /** Скасувати запис і замовкнути. Запис скасовується одразу, не чекаючи відповіді сервісу. */
   cancel() {
-    if (!this.ready) return;
-    this.#post('/cancel').catch(() => {});
+    this.listening?.abort();
+    if (this.ready) this.#post('/cancel').catch(() => {});
   }
 
   /** Озвучує текст. Повертає { interrupted } або кидає помилку. */
   async speak(text) {
-    const clean = cleanForSpeech(text);
+    const clean = limitForSpeech(cleanForSpeech(text));
     if (!this.ready || !clean) return { interrupted: false, skipped: true };
-    this.speaking = true;
+    // запас часу залежить від довжини тексту: синтез + саме звучання
+    const timeout = 30_000 + clean.length * 250;
     try {
-      const res = await this.#post('/speak', { text: clean }, AbortSignal.timeout(SPEAK_TIMEOUT_MS));
+      const res = await this.#post('/speak', { text: clean }, AbortSignal.timeout(timeout));
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data.error ?? `Мовний сервіс: помилка ${res.status}`);
       return { interrupted: !!data.interrupted };
-    } finally {
-      this.speaking = false;
+    } catch (e) {
+      // що б не сталося — сервіс має замовкнути, інакше він говоритиме далі вже без нашого відома
+      if (this.ready) this.#post('/cancel').catch(() => {});
+      throw e.name === 'TimeoutError' ? new Error('озвучення тривало надто довго') : e;
     }
   }
 }

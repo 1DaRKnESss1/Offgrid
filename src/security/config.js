@@ -206,7 +206,10 @@ export function saveSetting(key, value) {
     const raw = readJson(SETTINGS_FILE);
     if (!isObject(raw)) return false;
     raw[key] = value;
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(raw, null, 2) + '\n', 'utf8');
+    // спершу тимчасовий файл, потім заміна: обірваний запис не залишить зіпсованих налаштувань
+    const tmp = SETTINGS_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmp, SETTINGS_FILE);
     return true;
   } catch { return false; }
 }

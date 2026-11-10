@@ -41,6 +41,7 @@ let hideTimer = null;
 let activeHotkey = null;
 let quitting = false;
 let turnActive = false; // триває запис, запит до моделі або озвучення
+let turnCancelled = false; // користувач зупинив поточний хід (Esc, ■, «Нова розмова»)
 let speech = null;
 let speechConfigKey = '';
 const pendingConfirms = new Map();
@@ -180,7 +181,8 @@ function applyConfig({ announce = false } = {}) {
 
   // мовний сервіс перезапускаємо лише тоді, коли змінилися саме його налаштування
   const key = JSON.stringify(config.speech);
-  if (speech && key !== speechConfigKey) { speechConfigKey = key; speech.start(config.speech); }
+  // …або коли він не запустився чи впав: «Перечитати налаштування» дає йому ще одну спробу
+  if (speech && (key !== speechConfigKey || (announce && speech.status === 'failed'))) { speechConfigKey = key; speech.start(config.speech); }
   rebuildTrayMenu();
 
   // при старті панель сама забирає це через offgrid:ready
@@ -223,6 +225,7 @@ function newChat() {
 }
 
 function cancelAll() {
+  turnCancelled = true; // хід має зупинитися, на якому б кроці він не був
   agent.cancel();
   denyAllConfirms();
   speech?.cancel(); // зупиняє і запис, і озвучення
@@ -237,6 +240,7 @@ function showError(text) {
 
 function endTurn() {
   turnActive = false;
+  if (quitting || !win || win.isDestroyed()) return; // застосунок уже закривається
   send({ type: 'busy', value: false });
   if (state !== 'error') setState('idle');
   if (!win.isFocused()) { showPanel({ focus: false }); scheduleAutoHide(); }
@@ -258,7 +262,7 @@ async function runTurn(text) {
     const reply = await agent.ask(text);
     if (!current()) return;
     send({ type: 'assistant', text: reply });
-    if (config.speakReplies && speech?.ready && !SHOT) { // у режимі знімка для розробки мовчимо
+    if (config.speakReplies && speech?.ready && !turnCancelled && !SHOT) { // у режимі знімка для розробки мовчимо
       setState('speaking');
       try { await speech.speak(reply); } catch (e) { if (current()) send({ type: 'notice', text: `Не вдалося озвучити: ${e.message}` }); }
     }
@@ -274,6 +278,7 @@ async function runTurn(text) {
 function startTextTurn(text) {
   if (turnActive) { send({ type: 'soft', text: 'Зачекай, я ще виконую попередній запит.' }); return; }
   turnActive = true;
+  turnCancelled = false;
   send({ type: 'busy', value: true });
   runTurn(text);
 }
@@ -287,6 +292,7 @@ async function startListening() {
     return;
   }
   turnActive = true;
+  turnCancelled = false;
   send({ type: 'busy', value: true });
   setState('listening');
   showPanel({ focus: false });
@@ -305,8 +311,9 @@ async function startListening() {
     return;
   }
   send({ type: 'partial-end' });
-  if (generation !== agent.generation || heard.cancelled || !heard.text) {
-    if (generation === agent.generation && !heard.cancelled) send({ type: 'soft', text: 'Нічого не почув.' });
+  // turnCancelled ловить і скасування, що прийшло в останню мить, коли текст уже розпізнано
+  if (generation !== agent.generation || turnCancelled || heard.cancelled || !heard.text) {
+    if (generation === agent.generation && !turnCancelled && !heard.cancelled) send({ type: 'soft', text: 'Нічого не почув.' });
     endTurn();
     return;
   }
@@ -320,9 +327,10 @@ const trusted = (event) => event.senderFrame?.url === INDEX_URL && event.sender 
 function registerIpc() {
   ipcMain.handle('offgrid:ready', async (e) => {
     if (!trusted(e)) return null;
+    const ollama = await ping(config); // спершу чекаємо, потім збираємо знімок стану — інакше він застаріє
     return {
       state, busy: turnActive, hotkey: activeHotkey, model: config.model, warnings, speakReplies: config.speakReplies,
-      voice: { status: speech?.status ?? 'off', error: speech?.error ?? null }, ollama: await ping(config),
+      voice: { status: speech?.status ?? 'off', error: speech?.error ?? null }, ollama,
     };
   });
   ipcMain.on('offgrid:ask', (e, text) => {
