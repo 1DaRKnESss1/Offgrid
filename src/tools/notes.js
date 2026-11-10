@@ -5,7 +5,7 @@ import path from 'node:path';
 import { NOTES_DIR, NOTES_TRASH } from '../paths.js';
 import { str } from './util.js';
 
-const MAX_NOTE_CHARS = 20000, MAX_READ_CHARS = 4000;
+const MAX_NOTE_CHARS = 20000, MAX_READ_CHARS = 1500;
 const RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
 
 function safeTitle(title) {
@@ -46,7 +46,11 @@ export default [
         required: ['text'],
       },
     }),
-    describe: ({ title, text }) => `Створити нотатку «${safeTitle(title)}»: ${str(text, 160)}`,
+    describe: ({ title, text }) => {
+      const body = typeof text === 'string' ? text.trim() : '';
+      const more = body.length > 400 ? ` … (ще ${body.length - 400} символів)` : '';
+      return `Створити нотатку «${safeTitle(title)}» (${body.length} символів): ${body.slice(0, 400)}${more}`;
+    },
     async run({ title, text }, { os }) {
       const body = typeof text === 'string' ? text.trim() : '';
       if (!body) return { ok: false, error: 'Немає тексту для запису' };
@@ -71,7 +75,7 @@ export default [
   {
     name: 'list_notes',
     confirm: 'never',
-    untrusted: true,
+    untrusted: 'names',
     schema: () => ({
       description: 'Повертає назви збережених нотаток асистента',
       parameters: { type: 'object', properties: {} },
@@ -84,7 +88,7 @@ export default [
   {
     name: 'read_note',
     confirm: 'never',
-    untrusted: true,
+    untrusted: 'content',
     schema: () => ({
       description: 'Читає текст збереженої нотатки. Назву бери з результату list_notes',
       parameters: {

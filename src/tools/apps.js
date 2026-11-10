@@ -2,8 +2,10 @@
 import { TASKLIST, TASKKILL } from './util.js';
 
 async function isRunning(run, processName) {
-  const r = await run(TASKLIST, ['/FI', `IMAGENAME eq ${processName}`, '/NH']);
-  return r.ok && r.stdout.toLowerCase().includes(processName.toLowerCase());
+  // формат CSV: у звичайній таблиці tasklist обрізає довгі назви процесів
+  const r = await run(TASKLIST, ['/FI', `IMAGENAME eq ${processName}`, '/FO', 'CSV', '/NH']);
+  const wanted = processName.toLowerCase();
+  return r.ok && r.stdout.split(/\r?\n/).some((line) => line.split(',')[0].replace(/"/g, '').trim().toLowerCase() === wanted);
 }
 
 const closable = (config) => Object.keys(config.apps).filter((k) => config.apps[k].process);

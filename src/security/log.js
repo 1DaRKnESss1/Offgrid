@@ -4,6 +4,7 @@ import path from 'node:path';
 import { LOG_FILE } from '../paths.js';
 
 const MAX_VALUE = 300;
+const MAX_LOG_BYTES = 2 * 1024 * 1024; // далі журнал переїжджає в actions.old.log
 
 function shorten(value) {
   if (typeof value === 'string') return value.length > MAX_VALUE ? value.slice(0, MAX_VALUE) + `… (+${value.length - MAX_VALUE})` : value;
@@ -16,6 +17,9 @@ export function logAction(entry) {
   const line = JSON.stringify({ time: new Date().toISOString(), ...shorten(entry) });
   try {
     fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+    try {
+      if (fs.statSync(LOG_FILE).size > MAX_LOG_BYTES) fs.renameSync(LOG_FILE, LOG_FILE.replace(/\.log$/, '.old.log'));
+    } catch { /* журналу ще немає */ }
     fs.appendFileSync(LOG_FILE, line + '\n', 'utf8');
   } catch (e) {
     console.error('Не вдалося записати журнал:', e.message);

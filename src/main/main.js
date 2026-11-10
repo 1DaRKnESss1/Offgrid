@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { ROOT, DATA_DIR, ELECTRON_DATA, SETTINGS_FILE, LOG_FILE, NOTES_DIR } from '../paths.js';
 import { loadConfig } from '../security/config.js';
+import { TOOL_MODES } from '../security/policy.js';
 import { logAction } from '../security/log.js';
 import { Agent } from '../agent/agent.js';
 import { ping } from '../agent/ollama.js';
@@ -18,6 +19,7 @@ const PRELOAD = path.join(ROOT, 'src', 'preload', 'preload.cjs');
 const WIDTH = 400, HEIGHT = 540, MARGIN = 12;
 const CONFIRM_TIMEOUT_MS = 60_000;
 const AUTO_HIDE_MS = 9_000;
+const ERROR_SHOWN_MS = 5_000;
 const FALLBACK_HOTKEYS = ['Control+Shift+Space', 'Alt+Shift+Space', 'Control+Alt+O'];
 const SHOT = process.env.OFFGRID_SHOT; // лише для розробки: зберегти знімок панелі й вийти
 
@@ -28,7 +30,8 @@ app.setPath('userData', ELECTRON_DATA);
 if (!SHOT) app.disableHardwareAcceleration();
 app.setAppUserModelId('local.offgrid.assistant');
 
-if (!app.requestSingleInstanceLock()) app.quit();
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
 
 let win = null, tray = null, agent = null;
 let config = null, warnings = [];
@@ -83,7 +86,7 @@ function togglePanel() {
 function scheduleAutoHide() {
   clearTimeout(hideTimer);
   hideTimer = setTimeout(() => {
-    if (win?.isVisible() && !win.isFocused() && state === 'idle' && pendingConfirms.size === 0) win.hide();
+    if (win?.isVisible() && !win.isFocused() && (state === 'idle' || state === 'error') && pendingConfirms.size === 0) win.hide();
   }, AUTO_HIDE_MS);
 }
 
@@ -109,7 +112,7 @@ function createWindow() {
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.on('blur', () => {
-    if (state === 'idle' && pendingConfirms.size === 0 && !SHOT) hidePanel();
+    if ((state === 'idle' || state === 'error') && pendingConfirms.size === 0 && !SHOT) hidePanel();
   });
   win.on('close', (e) => {
     if (!quitting) { e.preventDefault(); hidePanel(); }
@@ -146,7 +149,7 @@ function denyAllConfirms() {
 
 // ---------- Налаштування ----------
 function applyConfig({ announce = false } = {}) {
-  const loaded = loadConfig();
+  const loaded = loadConfig({ previous: config, toolModes: TOOL_MODES });
   config = loaded.config;
   warnings = loaded.warnings;
   agent?.setConfig(config);
@@ -207,6 +210,9 @@ async function handleAsk(text) {
     denyAllConfirms();
     if (e.message === 'Скасовано') { setState('idle'); return { ok: false, cancelled: true }; }
     setState('error');
+    // помилка — не постійний стан: за кілька секунд повертаємось до очікування
+    setTimeout(() => { if (state === 'error' && !agent.busy) setState('idle'); }, ERROR_SHOWN_MS);
+    if (!win.isFocused()) { showPanel({ focus: false }); scheduleAutoHide(); }
     return { ok: false, error: e.message };
   }
 }
@@ -266,6 +272,7 @@ app.on('web-contents-created', (_e, contents) => {
 });
 
 app.whenReady().then(() => {
+  if (!gotLock) return; // друга копія: перша вже працює, ця лише завершується
   // Панель не ходить у мережу взагалі: дозволені лише власні локальні файли
   session.defaultSession.webRequest.onBeforeRequest((details, cb) => {
     const ok = details.url.startsWith('file:') || details.url.startsWith('devtools:');
@@ -279,8 +286,7 @@ app.whenReady().then(() => {
     openPath: async (p) => (await shell.openPath(p)) === '',
     openUrl: async (url) => { try { await shell.openExternal(url); return true; } catch { return false; } },
   };
-  const loaded = loadConfig();
-  config = loaded.config;
+  config = loadConfig({ toolModes: TOOL_MODES }).config;
   agent = new Agent({
     config,
     os,

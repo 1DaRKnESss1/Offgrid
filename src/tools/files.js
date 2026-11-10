@@ -7,7 +7,9 @@ import { checkFile } from '../security/pathguard.js';
 
 const SPECIAL = { this_pc: { name: 'Цей ПК', target: 'shell:MyComputerFolder' } };
 const MAX_RESULTS = 10, MAX_DEPTH = 4, MAX_LIST = 40;
-const MAX_READ_BYTES = 256 * 1024, MAX_READ_CHARS = 4000;
+// Вікно контексту моделі — 4096 токенів, і більшу його частину займають промпт та опис інструментів,
+// тому з файлу читаємо лише початок (1500 символів ≈ 550 токенів)
+const MAX_READ_BYTES = 256 * 1024, MAX_READ_CHARS = 1500;
 
 const folderKeys = (config) => Object.keys(config.folders);
 const getFolder = (config, key) => (Object.hasOwn(config.folders, key) ? config.folders[key] : null);
@@ -44,7 +46,7 @@ export default [
   {
     name: 'find_files',
     confirm: 'never',
-    untrusted: true,
+    untrusted: 'names',
     available: (config) => folderKeys(config).length > 0,
     schema: (config) => ({
       description: `Шукає файли за частиною назви в дозволених папках (${Object.values(config.folders).map((f) => f.name).join(', ')}). Знаходить лише документи й медіа дозволених типів`,
@@ -85,7 +87,7 @@ export default [
   {
     name: 'list_folder',
     confirm: 'never',
-    untrusted: true,
+    untrusted: 'names',
     available: (config) => folderKeys(config).length > 0,
     schema: (config) => ({
       description: 'Показує, що лежить у дозволеній папці: назви вкладених папок і файлів дозволених типів',
@@ -118,7 +120,8 @@ export default [
   },
   {
     name: 'open_file',
-    confirm: 'never',
+    // після читання ВМІСТУ файлів відкриття потребує дозволу: документ може містити макроси
+    confirm: 'content',
     schema: () => ({
       description: 'Відкриває файл у програмі за замовчуванням. Шлях бери ТІЛЬКИ з результату find_files або list_folder',
       parameters: {
@@ -128,6 +131,11 @@ export default [
       },
     }),
     describe: (args) => `Відкрити файл «${path.basename(str(args.path))}»`,
+    // недозволений шлях відхиляємо одразу, не турбуючи користувача запитом
+    async precheck(args, { config }) {
+      const check = await checkFile(args.path, config.folders, config.fileTypes);
+      return check.ok ? null : check;
+    },
     async run(args, { config, os }) {
       const check = await checkFile(args.path, config.folders, config.fileTypes);
       if (!check.ok) return check;
@@ -139,7 +147,7 @@ export default [
   {
     name: 'read_text_file',
     confirm: 'never',
-    untrusted: true,
+    untrusted: 'content',
     available: (config) => config.readableTypes.size > 0 && folderKeys(config).length > 0,
     schema: (config) => ({
       description: `Читає початок текстового файлу (${[...config.readableTypes].join(', ')}) з дозволеної папки. Шлях бери з результату find_files або list_folder`,

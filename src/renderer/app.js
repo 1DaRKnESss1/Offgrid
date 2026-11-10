@@ -13,6 +13,9 @@ const confirmBox = $('confirm');
 let busy = false;
 let confirmId = null;
 let hotkey = null;
+let chatId = 0; // зростає з кожною «Новою розмовою»
+let allowTimer = null;
+const ALLOW_DELAY_MS = 800; // щоб клацання, націлене в інше вікно, не стало дозволом
 
 function setState(state) {
   document.body.dataset.state = state;
@@ -54,8 +57,12 @@ function showConfirm(event) {
   confirmId = event.id;
   $('confirm-summary').textContent = event.summary;
   $('confirm-reason').textContent = event.reason === 'tainted'
-    ? 'Питаю, бо в цій розмові я читав назви чи вміст файлів, а їм не можна довіряти як командам.'
+    ? 'Питаю, бо в цій розмові я бачив назви чи вміст файлів, а їм не можна довіряти як командам.'
     : 'Таку дію я ніколи не виконую без твого дозволу.';
+  // кнопка «Дозволити» вмикається із затримкою
+  $('confirm-allow').disabled = true;
+  clearTimeout(allowTimer);
+  allowTimer = setTimeout(() => { $('confirm-allow').disabled = false; }, ALLOW_DELAY_MS);
   confirmBox.hidden = false;
 }
 
@@ -85,7 +92,7 @@ window.offgrid.onEvent((event) => {
     case 'confirm-done': if (event.id === confirmId) hideConfirm(); break;
     case 'config': applyConfig(event); break;
     case 'notice': add('notice', event.text); break;
-    case 'reset': hideConfirm(); showEmpty(); setBusy(false); break;
+    case 'reset': chatId++; hideConfirm(); showEmpty(); setBusy(false); break;
     case 'focus-input': input.focus(); break;
     case 'demo': // лише для знімка під час розробки
       add('user', 'закрий блокнот');
@@ -107,15 +114,17 @@ form.addEventListener('submit', async (e) => {
   input.value = '';
   add('user', text);
   setBusy(true);
+  const chat = chatId;
   try {
     const res = await window.offgrid.ask(text);
+    if (chat !== chatId) return; // за цей час почали нову розмову — відповідь уже не потрібна
     if (res.ok) add('assistant', res.text);
     else if (res.cancelled) add('tool failed', 'Зупинено');
     else add('error', res.error ?? 'Невідома помилка');
   } catch (err) {
-    add('error', String(err?.message ?? err));
+    if (chat === chatId) add('error', String(err?.message ?? err));
   } finally {
-    setBusy(false);
+    if (chat === chatId) setBusy(false);
     input.focus();
   }
 });

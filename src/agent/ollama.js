@@ -1,5 +1,6 @@
 // Мінімальний клієнт Ollama через вбудований fetch. Адреса завжди локальна (перевіряється в налаштуваннях).
 const REQUEST_TIMEOUT_MS = 180_000;
+export const NUM_CTX = 4096;
 
 export async function chat(config, messages, tools, signal) {
   const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
@@ -17,7 +18,8 @@ export async function chat(config, messages, tools, signal) {
         think: false,
         keep_alive: '30m',
         // рекомендовані розробниками моделі параметри для режиму без роздумів
-        options: { temperature: 0.7, top_p: 0.8, top_k: 20, presence_penalty: 1.5 },
+        // num_ctx задаємо явно: більше вікно не вміщається у 8 ГБ відеопам'яті поруч із самою моделлю
+        options: { temperature: 0.7, top_p: 0.8, top_k: 20, presence_penalty: 1.5, num_ctx: NUM_CTX },
       }),
     });
   } catch (e) {

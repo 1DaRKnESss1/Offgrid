@@ -1,13 +1,18 @@
 // Час, стан системи, гучність.
 import fs from 'node:fs/promises';
 import os from 'node:os';
-import { run, POWERSHELL } from './util.js';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { POWERSHELL, SYSTEM32 } from './util.js';
 
 const gb = (b) => +(b / 1024 ** 3).toFixed(1);
 
-async function gpuInfo() {
-  // nvidia-smi є лише з драйвером NVIDIA; якщо його немає — просто без цього поля
-  const r = await run('nvidia-smi', ['--query-gpu=name,memory.used,memory.total', '--format=csv,noheader,nounits'], 4000);
+const NVIDIA_SMI = path.join(SYSTEM32, 'nvidia-smi.exe');
+
+async function gpuInfo(run) {
+  // nvidia-smi ставиться разом із драйвером NVIDIA; якщо його немає — просто без цього поля
+  if (!existsSync(NVIDIA_SMI)) return undefined;
+  const r = await run(NVIDIA_SMI, ['--query-gpu=name,memory.used,memory.total', '--format=csv,noheader,nounits'], 4000);
   if (!r.ok) return undefined;
   const [name, used, total] = r.stdout.trim().split('\n')[0].split(',').map((s) => s.trim());
   if (!name || !Number.isFinite(+used) || !Number.isFinite(+total)) return undefined;
@@ -41,7 +46,7 @@ export default [
       description: 'Повертає стан комп\'ютера: оперативна пам\'ять, процесор, відеокарта, час роботи, вільне та загальне місце на кожному диску',
       parameters: { type: 'object', properties: {} },
     }),
-    async run() {
+    async run(_args, { os: sys }) {
       const disks = [];
       for (const letter of 'CDEFGHIJKLMNOPQRSTUVWXYZ') {
         try {
@@ -55,7 +60,7 @@ export default [
         ram_total_gb: gb(os.totalmem()),
         cpu: os.cpus()[0]?.model.trim(),
         cpu_threads: os.cpus().length,
-        gpu: await gpuInfo(),
+        gpu: await gpuInfo(sys.run),
         uptime_hours: +(os.uptime() / 3600).toFixed(1),
         disks,
       };

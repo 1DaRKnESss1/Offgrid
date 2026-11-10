@@ -135,7 +135,7 @@ header button:hover { background: var(--surface); color: var(--text); }
   border: 1px solid var(--warn-border);
 }
 .confirm-title { font-weight: 600; margin-bottom: 4px; }
-#confirm-summary { color: var(--text); overflow-wrap: anywhere; max-height: 110px; overflow-y: auto; user-select: text; }
+#confirm-summary { color: var(--text); overflow-wrap: anywhere; max-height: 150px; overflow-y: auto; user-select: text; }
 #confirm-reason { font-size: 12px; margin-top: 4px; }
 .confirm-buttons { display: flex; gap: 8px; margin-top: 10px; }
 .confirm-buttons button { flex: 1; padding: 6px 10px; }

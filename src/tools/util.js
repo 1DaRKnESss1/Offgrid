@@ -3,7 +3,7 @@ import { spawn, execFile } from 'node:child_process';
 import path from 'node:path';
 
 const WINDIR = process.env.SystemRoot ?? 'C:\\Windows';
-const SYSTEM32 = path.join(WINDIR, 'System32');
+export const SYSTEM32 = path.join(WINDIR, 'System32');
 export const EXPLORER = path.join(WINDIR, 'explorer.exe');
 export const POWERSHELL = path.join(SYSTEM32, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 export const TASKLIST = path.join(SYSTEM32, 'tasklist.exe');

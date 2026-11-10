@@ -2,15 +2,21 @@
 // Сам він нічого не завантажує і вмісту сторінок не бачить.
 import { str } from './util.js';
 
+const MAX_URL = 500, MAX_QUERY = 300;
+
 function normalizeUrl(input) {
-  let u = str(input, 2000);
-  if (!u) return null;
+  let u = str(input, MAX_URL + 1);
+  if (!u || u.length > MAX_URL) return null;
   if (!/^[a-z][a-z0-9+.-]*:/i.test(u)) u = 'https://' + u;
   let url;
   try { url = new URL(u); } catch { return null; }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
   if (url.username || url.password) return null;
-  if (!url.hostname.includes('.')) return null; // без localhost та імен внутрішньої мережі
+  // лише звичайні імена сайтів: без localhost, IP-адрес та імен внутрішньої мережі
+  const host = url.hostname.toLowerCase();
+  if (!host.includes('.') || host.endsWith('.') || host.startsWith('[') || /^[\d.]+$/.test(host)) return null;
+  if (/(^|\.)(localhost|local|internal|lan|home|intranet)$/.test(host)) return null;
+  if (url.toString().length > MAX_URL) return null;
   return url;
 }
 
@@ -26,9 +32,9 @@ export default [
         required: ['query'],
       },
     }),
-    describe: ({ query }) => `Відкрити в браузері пошук Google: «${str(query, 200)}»`,
+    describe: ({ query }) => `Відкрити в браузері пошук Google: «${str(query, MAX_QUERY)}»`,
     async run({ query }, { os }) {
-      const q = str(query, 300);
+      const q = str(query, MAX_QUERY);
       if (!q) return { ok: false, error: 'Порожній пошуковий запит' };
       const url = 'https://www.google.com/search?q=' + encodeURIComponent(q);
       return (await os.openUrl(url))
@@ -47,7 +53,10 @@ export default [
         required: ['url'],
       },
     }),
-    describe: ({ url }) => `Відкрити в браузері адресу: ${normalizeUrl(url)?.toString() ?? str(url, 200)}`,
+    describe: ({ url }) => {
+      const u = normalizeUrl(url);
+      return u ? `Відкрити в браузері сайт ${u.hostname} — повна адреса: ${u.toString()}` : `Відкрити в браузері адресу: ${str(url, 200)}`;
+    },
     async run({ url }, { os }) {
       const u = normalizeUrl(url);
       if (!u) return { ok: false, error: 'Некоректна адреса сайту (дозволені лише http і https)' };

