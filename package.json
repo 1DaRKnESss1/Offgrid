@@ -1,0 +1,16 @@
+{
+  "name": "offgrid",
+  "version": "0.1.0",
+  "description": "Локальний голосовий асистент для Windows 11 у треї",
+  "private": true,
+  "type": "module",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "smoke": "node scripts/smoke.js"
+  },
+  "devDependencies": {
+    "electron": "^45.2.3"
+  }
+}

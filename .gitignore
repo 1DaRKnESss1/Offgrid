@@ -1,0 +1,42 @@
+# Залежності
+node_modules/
+
+# Дані асистента: налаштування, журнал дій, нотатки, службові дані Electron
+data/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Моделі та великі бінарні файли
+*.onnx
+*.onnx.json
+*.gguf
+*.bin
+*.pt
+*.safetensors
+models/
+
+# Секрети й особисте
+.env
+.env.*
+*.pem
+*.key
+
+# Кеші, журнали, збірки
+*.log
+.cache/
+dist/
+out/
+*.tmp
+
+# Редактори й ОС
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Тимчасові дані тестів
+test/.tmp/

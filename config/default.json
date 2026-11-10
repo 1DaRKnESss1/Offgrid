@@ -1,0 +1,31 @@
+{
+  "model": "qwen3.5:9b",
+  "ollamaUrl": "http://127.0.0.1:11434",
+  "hotkey": "Control+Shift+Space",
+  "speakReplies": true,
+
+  "apps": {
+    "notepad":    { "name": "Блокнот",     "exe": "notepad.exe", "process": "Notepad.exe" },
+    "calculator": { "name": "Калькулятор", "exe": "calc.exe",    "process": "CalculatorApp.exe" },
+    "paint":      { "name": "Paint",       "exe": "mspaint.exe", "process": "mspaint.exe" },
+    "explorer":   { "name": "Провідник",   "exe": "explorer.exe" }
+  },
+
+  "folders": {
+    "desktop":   { "name": "Робочий стіл", "path": "~/Desktop" },
+    "documents": { "name": "Документи",    "path": "~/Documents" },
+    "downloads": { "name": "Завантаження", "path": "~/Downloads" },
+    "pictures":  { "name": "Зображення",   "path": "~/Pictures" },
+    "music":     { "name": "Музика",       "path": "~/Music" },
+    "videos":    { "name": "Відео",        "path": "~/Videos" }
+  },
+
+  "fileTypes": [
+    ".txt", ".md", ".csv", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp3", ".wav", ".mp4", ".mkv", ".avi"
+  ],
+
+  "readableTypes": [".txt", ".md", ".csv"],
+
+  "confirm": {}
+}
