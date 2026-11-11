@@ -406,10 +406,9 @@ const trusted = (event) => event.senderFrame?.url === INDEX_URL && event.sender 
 function registerIpc() {
   ipcMain.handle('offgrid:ready', async (e) => {
     if (!trusted(e)) return null;
-    const ollama = await ping(config); // спершу чекаємо, потім збираємо знімок стану — інакше він застаріє
     return {
       state, busy: turnActive, hotkey: activeHotkey, model: config.model, warnings, speakReplies: config.speakReplies,
-      voice: { status: speech?.status ?? 'off', error: speech?.error ?? null }, ollama,
+      voice: { status: speech?.status ?? 'off', error: speech?.error ?? null },
     };
   });
   ipcMain.on('offgrid:ask', (e, text) => {
@@ -428,6 +427,7 @@ function registerIpc() {
   ipcMain.on('offgrid:new-chat', (e) => { if (trusted(e)) newChat(); });
   ipcMain.on('offgrid:hide', (e) => { if (trusted(e)) hidePanel(); });
   ipcMain.handle('offgrid:settings', (e, action, payload) => (trusted(e) && typeof action === 'string' ? handleSettings(action, payload) : null));
+  ipcMain.handle('offgrid:ping', (e) => (trusted(e) ? ping(config) : false));
   ipcMain.handle('offgrid:log', (e) => (trusted(e) ? readLog(150) : []));
   // Поки користувач записує нове сполучення, чинну гарячу клавішу знімаємо: інакше її натискання
   // почало б розмову замість того, щоб потрапити в поле запису
@@ -452,7 +452,7 @@ async function devScreenshot() {
   } else if (process.env.OFFGRID_SHOT_VIEW) {
     const [view, tab] = process.env.OFFGRID_SHOT_VIEW.split(':');
     send({ type: 'open-view', view, tab });
-    await new Promise((r) => setTimeout(r, 600));
+    await new Promise((r) => setTimeout(r, Number(process.env.OFFGRID_SHOT_WAIT) || 600));
   } else {
     send({ type: 'demo' });
   }

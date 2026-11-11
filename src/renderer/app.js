@@ -24,6 +24,8 @@ let hotkey = null;
 let voice = 'off';
 let speakReplies = true;
 let allowTimer = null;
+let ollamaNote = null; // попередження «Ollama не відповідає», поки воно на екрані
+let ollamaTimer = null;
 let liveEl = null; // бульбашка з текстом, який розпізнається просто зараз
 
 function setState(next) {
@@ -86,6 +88,23 @@ function endLive() {
   liveEl = null;
 }
 
+// Попередження «Ollama не відповідає» — це стан, а не запис у розмові: воно зникає саме,
+// щойно Ollama відгукнеться (або щойно прийде перша ж відповідь моделі).
+function clearOllamaNote() {
+  clearTimeout(ollamaTimer);
+  ollamaNote?.remove();
+  ollamaNote = null;
+}
+
+async function checkOllama() {
+  clearTimeout(ollamaTimer);
+  let alive = false;
+  try { alive = await window.offgrid.pingOllama(); } catch { /* вважаємо, що не відповіла */ }
+  if (alive) { clearOllamaNote(); return; }
+  if (!ollamaNote?.isConnected) ollamaNote = add('error', 'Ollama не відповідає. Запусти її — і я запрацюю.');
+  ollamaTimer = setTimeout(checkOllama, 5000);
+}
+
 function setHint() {
   const parts = [];
   if (hotkey) {
@@ -142,7 +161,7 @@ window.offgrid.onEvent((event) => {
     case 'state': setState(event.state); break;
     case 'busy': setBusy(event.value); if (event.value && window.offgridView?.current !== 'chat') window.offgridView.show('chat'); break;
     case 'user': endLive(); add('user', event.text); break;
-    case 'assistant': add('assistant', event.text); break;
+    case 'assistant': clearOllamaNote(); add('assistant', event.text); break;
     case 'error': add('error', event.text); break;
     case 'stopped': add('tool failed', 'Зупинено'); break;
     case 'soft': add('tool failed', event.text); break;
@@ -156,7 +175,7 @@ window.offgrid.onEvent((event) => {
     case 'voice': applyVoice(event); break;
     case 'speak-setting': speakReplies = event.value; renderControls(); break;
     case 'notice': add('notice', event.text); break;
-    case 'reset': hideConfirm(); showEmpty(); setBusy(false); break;
+    case 'reset': hideConfirm(); showEmpty(); setBusy(false); ollamaNote = null; checkOllama(); break;
     case 'focus-input': if ((window.offgridView?.current ?? 'chat') === 'chat') input.focus(); break;
     case 'capture-end': window.offgridView?.captureEnded(); break;
     case 'open-view': window.offgridView?.show(event.view, { tab: event.tab }); break;
@@ -207,5 +226,5 @@ window.offgrid.ready().then((info) => {
   setBusy(!!info.busy);
   applyVoice(info.voice);
   applyConfig(info);
-  if (!info.ollama) add('error', 'Ollama не відповідає. Запусти її — і я запрацюю.');
+  setTimeout(checkOllama, 1500); // не в саму мить запуску, коли все ще вантажиться
 });

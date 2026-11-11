@@ -61,7 +61,8 @@ async function chatOnce(config, messages, tools, signal) {
 
 export async function ping(config) {
   try {
-    const res = await fetch(`${config.ollamaUrl}/api/version`, { signal: AbortSignal.timeout(2000) });
+    // запас у 4 с: під час запуску застосунку процесор зайнятий завантаженням моделей мовлення
+    const res = await fetch(`${config.ollamaUrl}/api/version`, { signal: AbortSignal.timeout(4000) });
     return res.ok;
   } catch { return false; }
 }
