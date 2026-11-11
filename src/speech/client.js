@@ -9,6 +9,7 @@ const SCRIPT = path.join(ROOT, 'speech', 'speech_server.py');
 const START_TIMEOUT_MS = 180_000; // перше завантаження моделей із диска буває довгим
 const LISTEN_TIMEOUT_MS = 90_000;
 const MAX_SPEAK_CHARS = 1200;
+const SAY_DONE_TIMEOUT_MS = 240_000; // сервіс озвучує щонайбільше 1500 символів на відповідь
 
 /** Прибирає те, що голос не має зачитувати: розмітку, посилання, емодзі, зайві пробіли. */
 export function cleanForSpeech(text) {
@@ -157,13 +158,14 @@ export class Speech {
    * Слухає мікрофон до паузи. onEvent отримує { type: 'listening' | 'speech' | 'recognizing' | 'partial', text? }.
    * Повертає { text } (порожній, якщо нічого не сказано), { cancelled: true } або кидає помилку.
    */
-  async listen(onEvent = () => {}) {
+  async listen(onEvent = () => {}, { waitSeconds } = {}) {
     if (!this.ready) throw new Error('Голос зараз недоступний');
     if (this.listening) throw new Error('Я вже слухаю');
     const abort = new AbortController();
     this.listening = abort;
     try {
-      const res = await this.#post('/listen', {}, AbortSignal.any([abort.signal, AbortSignal.timeout(LISTEN_TIMEOUT_MS)]));
+      const body = Number.isFinite(waitSeconds) ? { wait_s: waitSeconds } : {};
+      const res = await this.#post('/listen', body, AbortSignal.any([abort.signal, AbortSignal.timeout(LISTEN_TIMEOUT_MS)]));
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Мовний сервіс: помилка ${res.status}`);
       const decoder = new TextDecoder();
       let buffer = '';
@@ -202,6 +204,33 @@ export class Speech {
   cancel() {
     this.listening?.abort();
     if (this.ready) this.#post('/cancel').catch(() => {});
+  }
+
+  /**
+   * Додає речення до озвучення й не чекає, доки воно прозвучить. Речення звучать одне за одним без пауз.
+   * Повертає false, якщо сервіс більше не бере текст (ліміт довжини відповіді).
+   */
+  async say(text) {
+    const clean = cleanForSpeech(text);
+    if (!this.ready || !clean) return false;
+    const res = await this.#post('/say', { text: clean }, AbortSignal.timeout(10_000));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error ?? `Мовний сервіс: помилка ${res.status}`);
+    return data.accepted !== false;
+  }
+
+  /** Речень більше не буде: чекає, доки все договорено. Повертає { interrupted }. */
+  async finishSpeaking() {
+    if (!this.ready) return { interrupted: false };
+    try {
+      const res = await this.#post('/say-done', {}, AbortSignal.timeout(SAY_DONE_TIMEOUT_MS));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error ?? `Мовний сервіс: помилка ${res.status}`);
+      return { interrupted: !!data.interrupted };
+    } catch (e) {
+      if (this.ready) this.#post('/cancel').catch(() => {});
+      throw e.name === 'TimeoutError' ? new Error('озвучення тривало надто довго') : e;
+    }
   }
 
   /** Озвучує текст. Повертає { interrupted } або кидає помилку. */

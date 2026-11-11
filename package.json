@@ -9,6 +9,7 @@
     "start": "electron .",
     "test": "node --test",
     "smoke": "node scripts/smoke.js",
+    "tool-eval": "node scripts/tool-eval.js",
     "speech-check": "node scripts/speech-check.js",
     "speech-selftest": "python speech/selftest.py"
   },

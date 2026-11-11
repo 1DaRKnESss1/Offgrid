@@ -197,5 +197,6 @@ export function settingsView(config, warnings = []) {
     types: g.types.map((ext) => ({ ext, open: config.fileTypes.has(ext) })),
   }));
   const readable = [...READABLE].map((ext) => ({ ext, read: config.readableTypes.has(ext) }));
-  return { editable: raw !== null, brokenMessage: raw === null ? BROKEN : null, moreApps: hidden('apps'), moreFolders: hidden('folders'), apps, folders, fileGroups, readable, hotkey: config.hotkey, warnings };
+  return { editable: raw !== null, brokenMessage: raw === null ? BROKEN : null, moreApps: hidden('apps'), moreFolders: hidden('folders'), apps, folders, fileGroups, readable, hotkey: config.hotkey, warnings,
+    flags: { speakReplies: !!config.speakReplies, followUp: !!config.followUp }, voice: !!config.speech?.enabled };
 }

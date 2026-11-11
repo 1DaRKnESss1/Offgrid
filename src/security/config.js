@@ -22,7 +22,7 @@ export const OPENABLE = new Set(FILE_TYPE_GROUPS.flatMap((g) => g.types));
 // Читати вміст можна лише з простих текстових форматів
 export const READABLE = new Set(['.txt', '.md', '.csv', '.log', '.json', '.xml', '.ini', '.yml', '.yaml']);
 const CONFIRM_MODES = ['never', 'content', 'tainted', 'always'];
-const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'speakReplies', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'confirm']);
+const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'speakReplies', 'followUp', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'confirm']);
 
 const WINDIR = process.env.SystemRoot ?? 'C:\\Windows';
 
@@ -133,6 +133,8 @@ export function validateConfig(raw, defaults, toolModes = null) {
 
   cfg.hotkey = typeof raw.hotkey === 'string' && raw.hotkey.trim() ? raw.hotkey.trim() : defaults.hotkey;
   cfg.speakReplies = typeof raw.speakReplies === 'boolean' ? raw.speakReplies : defaults.speakReplies;
+  // після відповіді голосом кілька секунд слухати продовження без клавіші
+  cfg.followUp = typeof raw.followUp === 'boolean' ? raw.followUp : defaults.followUp === true;
   // голос — не білий список: якщо розділу в файлі користувача немає, беремо типовий
   cfg.speech = validateSpeech(raw.speech === undefined ? defaults.speech : raw.speech, warn);
 
@@ -202,7 +204,7 @@ export function validateConfig(raw, defaults, toolModes = null) {
 
 /** Змінює один простий параметр у settings.json, не чіпаючи решти (для вимикача озвучення в панелі). */
 export function saveSetting(key, value) {
-  if (key !== 'speakReplies' || typeof value !== 'boolean') return false;
+  if (!['speakReplies', 'followUp'].includes(key) || typeof value !== 'boolean') return false;
   try {
     const raw = readJson(SETTINGS_FILE);
     if (!isObject(raw)) return false;

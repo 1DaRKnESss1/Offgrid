@@ -13,6 +13,8 @@ import { Agent } from '../agent/agent.js';
 import { ping } from '../agent/ollama.js';
 import { nodeOs } from '../tools/util.js';
 import { Speech } from '../speech/client.js';
+import { SentenceSplitter } from '../speech/sentences.js';
+import { isFiller } from '../agent/tone.js';
 import { iconPng } from './icon.js';
 
 const INDEX_HTML = path.join(ROOT, 'src', 'renderer', 'index.html');
@@ -22,6 +24,7 @@ const WIDTH = 400, HEIGHT = 540, MARGIN = 12;
 const CONFIRM_TIMEOUT_MS = 60_000;
 const AUTO_HIDE_MS = 9_000;
 const ERROR_SHOWN_MS = 5_000;
+const FOLLOW_UP_WAIT_S = 5; // скільки чекати на продовження розмови після відповіді
 const FALLBACK_HOTKEYS = ['Control+Shift+Space', 'Alt+Shift+Space', 'Control+Alt+O'];
 const SHOT = process.env.OFFGRID_SHOT; // лише для розробки: зберегти знімок панелі й вийти
 
@@ -46,7 +49,9 @@ let quitting = false;
 let turnActive = false; // триває запис, запит до моделі або озвучення
 let hotkeySuspended = false; // гарячу клавішу тимчасово знято, поки користувач записує нову
 let dialogOpen = false; // відкрито системне вікно вибору файлу: панель у цей час не ховаємо
-let turnCancelled = false; // користувач зупинив поточний хід (Esc, ■, «Нова розмова»)
+let turnCancelled = false;
+let listenNext = false;   // після цього ходу одразу слухати (відповідь перебито гарячою клавішею)
+let replySink = null;     // куди йде текст відповіді, поки модель його пише // користувач зупинив поточний хід (Esc, ■, «Нова розмова»)
 let speech = null;
 let speechConfigKey = '';
 const pendingConfirms = new Map();
@@ -96,7 +101,8 @@ function togglePanel() {
 function onHotkey() {
   if (dialogOpen) return; // відкрито вікно вибору файлу — розмову зараз не починаємо
   if (state === 'listening') speech.stopListening();
-  else if (state === 'speaking') speech.cancel();
+  // перебити відповідь: замовкнути й одразу слухати, що ти скажеш
+  else if (state === 'speaking') { listenNext = true; speech.cancel(); }
   else if (turnActive) showPanel({ focus: false });
   else if (speech?.ready) startListening();
   else togglePanel();
@@ -268,36 +274,75 @@ function setSpeakReplies(value) {
   rebuildTrayMenu();
 }
 
-// Один хід розмови: запит до моделі, відповідь у панель і (якщо ввімкнено) голосом
-async function runTurn(text) {
+// Один хід розмови: запит до моделі, відповідь у панель і (якщо ввімкнено) голосом.
+// Текст відповіді надходить потоком: панель показує його одразу, а кожне завершене речення йде на озвучення,
+// тож асистент починає говорити з першого речення. Повертає true, якщо після ходу треба одразу слухати далі.
+async function runTurn(text, { voice = false } = {}) {
   const generation = agent.generation;
   const current = () => generation === agent.generation; // false, якщо посеред ходу почали нову розмову
+  const mayTalk = () => (config.speakReplies || process.env.OFFGRID_SHOT_SOUND) && speech?.ready && !turnCancelled && current() && (!SHOT || process.env.OFFGRID_SHOT_SOUND); // у режимі знімка зазвичай мовчимо
+  let spoke = false;        // хоча б одне речення пішло на озвучення
+  let speechBroken = false;
+  let queue = Promise.resolve(); // речення йдуть до мовного сервісу строго по черзі
+
+  const sayNext = (sentence) => {
+    if (speechBroken || !mayTalk() || isFiller(sentence)) return;
+    spoke = true;
+    queue = queue.then(async () => {
+      if (speechBroken || turnCancelled || !current()) return;
+      await speech.say(sentence);
+    }).catch((e) => {
+      speechBroken = true;
+      if (current()) send({ type: 'notice', text: `Не вдалося озвучити: ${e.message}` });
+    });
+  };
+  const splitter = new SentenceSplitter(sayNext);
+  replySink = {
+    delta(piece) { if (current()) { send({ type: 'reply-delta', text: piece }); splitter.push(piece); } },
+    reset() { splitter.reset(); if (current()) send({ type: 'reply-reset' }); },
+  };
+
   try {
     const reply = await agent.ask(text);
-    if (!current()) return;
+    replySink = null;
+    if (!current()) return false;
+    splitter.flush();
     send({ type: 'assistant', text: reply });
-    if (config.speakReplies && speech?.ready && !turnCancelled && !SHOT) { // у режимі знімка для розробки мовчимо
+    let interrupted = false;
+    if (spoke) {
       setState('speaking');
-      try { await speech.speak(reply); } catch (e) { if (current()) send({ type: 'notice', text: `Не вдалося озвучити: ${e.message}` }); }
+      await queue;
+      if (!speechBroken) {
+        try { interrupted = (await speech.finishSpeaking()).interrupted; } catch (e) { if (current()) send({ type: 'notice', text: `Не вдалося озвучити: ${e.message}` }); }
+      }
     }
+    if (!current() || turnCancelled) return false;
+    if (listenNext) return true;                       // відповідь перебито гарячою клавішею
+    return voice && spoke && !interrupted && !speechBroken && config.followUp; // розмова голосом триває
   } catch (e) {
     denyAllConfirms();
-    if (!current()) return;
+    if (spoke) speech?.cancel();
+    if (!current()) return false;
     if (e.message === 'Скасовано') send({ type: 'stopped' }); else showError(e.message);
+    return false;
   } finally {
-    endTurn();
+    replySink = null;
   }
 }
 
-function startTextTurn(text) {
+async function startTextTurn(text) {
   if (turnActive) { send({ type: 'soft', text: 'Зачекай, я ще виконую попередній запит.' }); return; }
   turnActive = true;
   turnCancelled = false;
+  listenNext = false;
   send({ type: 'busy', value: true });
-  runTurn(text);
+  let again = false;
+  try { again = await runTurn(text); } finally { endTurn(); }
+  if (again && listenNext) startListening();
 }
 
-// Голосовий хід: слухаємо до паузи, показуємо текст наживо, далі — як звичайний запит
+// Голосова розмова: слухаємо до паузи, показуємо текст наживо, відповідаємо — і, якщо ввімкнено «продовження»,
+// ще кілька секунд слухаємо далі вже без клавіші. Розмова закінчується, коли ти мовчиш.
 async function startListening() {
   if (turnActive) return;
   if (!speech?.ready) {
@@ -308,31 +353,45 @@ async function startListening() {
   turnActive = true;
   turnCancelled = false;
   send({ type: 'busy', value: true });
-  setState('listening');
-  showPanel({ focus: false });
-  const generation = agent.generation;
-  let heard;
   try {
-    heard = await speech.listen((event) => {
-      if (event.type === 'partial') send({ type: 'partial', text: event.text });
-      else if (event.type === 'speech') send({ type: 'partial', text: '' });
-      else if (event.type === 'recognizing') setState('thinking');
-    });
-  } catch (e) {
-    send({ type: 'partial-end' });
-    showError(e.message);
+    for (let followUp = false; ; followUp = true) {
+      const byKey = listenNext; // цей запис почато клавішею (перебивання), а не автоматичним «продовженням»
+      listenNext = false;
+      setState('listening');
+      showPanel({ focus: false });
+      const generation = agent.generation;
+      let heard;
+      try {
+        heard = await speech.listen((event) => {
+          if (event.type === 'partial') send({ type: 'partial', text: event.text });
+          else if (event.type === 'speech') send({ type: 'partial', text: '' });
+          else if (event.type === 'recognizing') setState('thinking');
+        }, followUp && !byKey ? { waitSeconds: FOLLOW_UP_WAIT_S } : {});
+      } catch (e) {
+        send({ type: 'partial-end' });
+        showError(e.message);
+        return;
+      }
+      send({ type: 'partial-end' });
+      // turnCancelled ловить і скасування, що прийшло в останню мить, коли текст уже розпізнано
+      if (generation !== agent.generation || turnCancelled || heard.cancelled) return;
+      if (!heard.text) {
+        // після відповіді тиша — це просто кінець розмови; на прямий виклик кажемо, що нічого не почули
+        if (!followUp || byKey) send({ type: 'soft', text: 'Нічого не почув.' });
+        return;
+      }
+      send({ type: 'user', text: heard.text });
+      if (!(await runTurn(heard.text, { voice: true }))) return;
+    }
+  } finally {
     endTurn();
-    return;
   }
-  send({ type: 'partial-end' });
-  // turnCancelled ловить і скасування, що прийшло в останню мить, коли текст уже розпізнано
-  if (generation !== agent.generation || turnCancelled || heard.cancelled || !heard.text) {
-    if (generation === agent.generation && !turnCancelled && !heard.cancelled) send({ type: 'soft', text: 'Нічого не почув.' });
-    endTurn();
-    return;
-  }
-  send({ type: 'user', text: heard.text });
-  await runTurn(heard.text);
+}
+
+function setFollowUp(value) {
+  config.followUp = value === true;
+  logAction({ tool: 'settings', args: { change: 'followUp', on: config.followUp }, decision: 'user', ok: true });
+  return saveSetting('followUp', config.followUp);
 }
 
 // ---------- Налаштування з панелі ----------
@@ -390,6 +449,11 @@ async function handleSettings(action, payload) {
     if (dialogOpen) return null;
     const picked = await pickPath(action === 'addApp' ? 'exe' : 'dir');
     if (picked) result = changeSettings(action, action === 'addApp' ? { exe: picked } : { dir: picked });
+  } else if (action === 'setFlag') {
+    const on = data.on === true;
+    if (data.key === 'speakReplies') setSpeakReplies(on);
+    else if (data.key === 'followUp') { if (!setFollowUp(on)) result = { ok: false, error: 'Не вдалося зберегти — налаштування діятиме до перезапуску.' }; }
+    else result = { ok: false, error: 'Невідомий перемикач' };
   } else if (action === 'setHotkey') {
     result = changeHotkey(data.hotkey);
   } else if (SIMPLE_CHANGES.has(action)) {
@@ -497,7 +561,10 @@ app.whenReady().then(() => {
     os,
     confirm: askConfirm,
     emit: (event) => {
-      if (event.type === 'state') { if (pendingConfirms.size === 0) setState(event.state); } else send(event);
+      if (event.type === 'state') { if (pendingConfirms.size === 0 && state !== 'speaking') setState(event.state); }
+      else if (event.type === 'reply-delta') replySink?.delta(event.text);
+      else if (event.type === 'reply-reset') replySink?.reset();
+      else send(event);
     },
   });
 

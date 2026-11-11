@@ -31,15 +31,27 @@ try {
   console.log('Стан:', JSON.stringify(health));
 
   if (process.argv.includes('--speak')) {
+    // речення додаються по одному, як під час відповіді моделі, і мають звучати без пауз між ними
     const t = performance.now();
-    const said = await speech.speak('Перевірка голосу.');
-    console.log(`Озвучено за ${((performance.now() - t) / 1000).toFixed(1)} с`, said);
+    for (const sentence of ['Перевірка голосу.', 'Це друге речення, воно має звучати одразу за першим.', 'А це третє.']) {
+      await speech.say(sentence);
+    }
+    console.log(`Три речення поставлено в чергу за ${((performance.now() - t) / 1000).toFixed(2)} с`);
+    const spoken = await speech.finishSpeaking();
+    console.log(`Договорено за ${((performance.now() - t) / 1000).toFixed(1)} с`, spoken);
+    // перебивання: починаємо довгу фразу й обриваємо її за секунду
+    await speech.say('Ця фраза довга, і її має бути обірвано на півслові, щойно надійде команда замовкнути, раніше ніж вона закінчиться.');
+    const t2 = performance.now();
+    setTimeout(() => speech.cancel(), 1200);
+    const cut = await speech.finishSpeaking();
+    console.log(`Перебивання: зупинилось за ${((performance.now() - t2) / 1000).toFixed(1)} с`, cut);
+    if (!cut.interrupted) failed = true;
   }
 
   console.log('Слухаю мікрофон (до 8 с тиші)…');
   const t = performance.now();
   const stopper = process.argv.includes('--quick') ? setTimeout(() => speech.stopListening(), 2500) : null;
-  const heard = await speech.listen((e) => console.log(`  [${e.type}] ${e.text ?? ''}`));
+  const heard = await speech.listen((e) => console.log(`  [${e.type}] ${e.text ?? ''}`), process.argv.includes('--quick') ? { waitSeconds: 3 } : {});
   clearTimeout(stopper);
   console.log(`Результат за ${((performance.now() - t) / 1000).toFixed(1)} с:`, heard);
 } catch (e) {

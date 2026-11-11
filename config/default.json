@@ -3,6 +3,7 @@
   "ollamaUrl": "http://127.0.0.1:11434",
   "hotkey": "Control+Shift+Space",
   "speakReplies": true,
+  "followUp": true,
 
   "speech": {
     "enabled": true,

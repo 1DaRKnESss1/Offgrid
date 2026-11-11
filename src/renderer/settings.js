@@ -152,6 +152,14 @@
         ? 'Утримуй Ctrl, Alt або Win (можна разом із Shift) і натисни клавішу. Esc — скасувати.'
         : differs ? `У налаштуваннях записано ${prettyKeys(view.hotkey)}, але вона зайнята іншою програмою.`
           : !activeHotkey ? 'Жодну клавішу не вдалося зареєструвати — обери іншу.' : 'Нею ти починаєш говорити, зупиняєш запис і перебиваєш відповідь.' }),
+      view.voice ? h('div', { class: 'group-title', text: 'Розмова' }) : null,
+      view.voice ? h('label', { class: 'check' },
+        h('input', { type: 'checkbox', checked: view.flags.speakReplies, onchange: (e) => request('setFlag', { key: 'speakReplies', on: e.target.checked }) }),
+        h('span', { text: 'Відповідати голосом' })) : null,
+      view.voice ? h('label', { class: 'check' },
+        h('input', { type: 'checkbox', checked: view.flags.followUp, onchange: (e) => request('setFlag', { key: 'followUp', on: e.target.checked }) }),
+        h('span', { text: 'Після відповіді слухати продовження без клавіші' })) : null,
+      view.voice ? h('p', { class: 'help', text: 'Асистент слухає ще 5 секунд після своєї відповіді. Якщо ти мовчиш — розмова закінчується. Працює лише в розмові голосом і коли відповіді озвучуються.' }) : null,
       h('div', { class: 'group-title', text: 'Файл налаштувань' }),
       h('p', { class: 'help', text: 'Усе з цього екрана зберігається в data/settings.json. Модель, голос і посилене підтвердження для окремих дій поки змінюються лише там: меню іконки в треї → «Відкрити налаштування».' }),
     ];

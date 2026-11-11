@@ -3,6 +3,7 @@ import { chat } from './ollama.js';
 import { systemPrompt } from './prompt.js';
 import { toolSchemas, TOOL_LABELS } from '../tools/index.js';
 import { executeTool, toolMessageContent } from '../security/policy.js';
+import { stripFiller } from './tone.js';
 
 const MAX_STEPS = 6;
 const MAX_CALLS_PER_STEP = 4;
@@ -13,6 +14,7 @@ const HISTORY_BUDGET_CHARS = 3000;
 const MAX_INPUT_CHARS = 2000;
 const IDLE_RESET_MS = 15 * 60 * 1000;
 const CANCELLED = 'Скасовано';
+const REMINDER = '\n\n(Нагадування асистенту: якщо це прохання щось зробити на комп’ютері або дізнатися час, стан системи чи файли — спершу виклич інструмент. Не кажи, що щось зроблено чи відомо, без результату інструмента в цьому ж ході.)';
 
 export class Agent {
   /**
@@ -100,11 +102,21 @@ export class Agent {
 
       for (let step = 0; step < MAX_STEPS; step++) {
         emit({ type: 'state', state: 'thinking' });
-        const message = await chat(this.config, [{ role: 'system', content: systemPrompt(this.config) }, ...messages], tools, signal);
+        let streamed = false;
+        // Нагадування додаємо лише в запит (не в історію) і лише до останнього повідомлення користувача:
+        // посеред розмови модель інакше схильна «розповісти», що зробила, не викликавши інструмент.
+        const last = messages.findLastIndex((m) => m.role === 'user');
+        const request = messages.map((m, i) => (i === last ? { ...m, content: m.content + REMINDER } : m));
+        const message = await chat(this.config, [{ role: 'system', content: systemPrompt(this.config) }, ...request], tools, signal,
+          (piece) => { streamed = true; emit({ type: 'reply-delta', text: piece }); });
         if (!current()) throw new Error(CANCELLED);
         const calls = Array.isArray(message.tool_calls) ? message.tool_calls.slice(0, MAX_CALLS_PER_STEP) : [];
-        messages.push({ role: 'assistant', content: message.content ?? '', ...(calls.length ? { tool_calls: calls } : {}) });
-        if (calls.length === 0) return String(message.content ?? '').trim() || 'Не маю відповіді.';
+        // в історію теж кладемо відповідь без чергового «чим ще допомогти?», щоб модель не вчилася на власній звичці
+        const content = calls.length ? (message.content ?? '') : stripFiller(message.content);
+        messages.push({ role: 'assistant', content, ...(calls.length ? { tool_calls: calls } : {}) });
+        if (calls.length === 0) return content || 'Не маю відповіді.';
+        // текст перед викликом інструмента — не відповідь, а «вступ»: з екрана його прибираємо
+        if (streamed) emit({ type: 'reply-reset' });
 
         emit({ type: 'state', state: 'executing' });
         for (const call of calls) {
