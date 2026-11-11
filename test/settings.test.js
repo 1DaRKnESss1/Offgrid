@@ -66,6 +66,50 @@ test('програми: те, що не пройшло б перевірку в�
   assert.equal(fs.readFileSync(SETTINGS_FILE, 'utf8'), before); // файл не змінився
 });
 
+test('програми: ту саму програму не додати вдруге, навіть якщо в списку вона записана короткою назвою', () => {
+  const res = editSettings('addApp', { exe: notepad }, TOOL_MODES);
+  assert.equal(res.ok, false);
+  assert.match(res.error, /вже є/);
+  assert.deepEqual(Object.keys(raw().apps), ['notepad']);
+});
+
+test('програми: «можна закривати» не записується, якщо назву процесу відкине перевірка', () => {
+  const odd = path.join(TMP, 'my app++.exe');
+  fs.writeFileSync(odd, 'x');
+  assert.equal(editSettings('addApp', { exe: odd }, TOOL_MODES).ok, true);
+  const key = Object.keys(raw().apps).find((k) => k !== 'notepad');
+  const before = fs.readFileSync(SETTINGS_FILE, 'utf8');
+  const res = editSettings('updateApp', { key, closable: true }, TOOL_MODES);
+  assert.equal(res.ok, false);
+  assert.match(res.error, /закривати не зможе/);
+  assert.equal(fs.readFileSync(SETTINGS_FILE, 'utf8'), before);
+  assert.equal(load().warnings.length, 0);
+});
+
+test('зміна не чіпає чужого: невідомі параметри й сусідні записи лишаються як були', () => {
+  const data = raw();
+  data.myNote = { keep: [1, 2, 3] };
+  data.apps.ghost = { name: 'Привид', exe: 'C:\\нема\\ghost.exe' };
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(data));
+  assert.equal(editSettings('addFolder', { dir: more }, TOOL_MODES).ok, true);
+  const after = raw();
+  assert.deepEqual(after.myNote, { keep: [1, 2, 3] });
+  assert.deepEqual(after.apps.ghost, data.apps.ghost);
+  assert.deepEqual(after.apps.notepad, data.apps.notepad);
+  assert.equal(fs.existsSync(SETTINGS_FILE + '.tmp'), false);
+});
+
+test('розділ, записаний неправильно, панель не переписує', () => {
+  const data = raw();
+  data.folders = ['не', 'те'];
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(data));
+  const before = fs.readFileSync(SETTINGS_FILE, 'utf8');
+  assert.equal(editSettings('addFolder', { dir: more }, TOOL_MODES).ok, false);
+  assert.equal(fs.readFileSync(SETTINGS_FILE, 'utf8'), before);
+  fs.rmSync(SETTINGS_FILE);
+  assert.match(editSettings('addFolder', { dir: more }, TOOL_MODES).error, /зник/);
+});
+
 test('папки: додати й прибрати; системні, неіснуючі й мережеві — відмова з поясненням', () => {
   assert.equal(editSettings('addFolder', { dir: more }, TOOL_MODES).ok, true);
   const key = Object.keys(raw().folders).find((k) => k !== 'docs');
@@ -110,7 +154,8 @@ test('типи файлів: лише з дозволеного переліку
 
 test('гаряча клавіша: приймаються лише сполучення з модифікатором', () => {
   for (const ok of ['Control+Shift+Space', 'Alt+F9', 'Control+Alt+Shift+K', 'Super+Alt+1']) assert.equal(isValidHotkey(ok), true, ok);
-  for (const bad of ['Space', 'A', 'Control+Shift', 'Control+Alt+Delete; calc', 'Control+Escape', '', null, 'Control+Control+Control+Control+A']) {
+  for (const bad of ['Space', 'A', 'Control+Shift', 'Control+Alt+Delete; calc', 'Control+Escape', '', null, 'Control+Control+Control+Control+A',
+    'Shift+A', 'Shift+Space', 'Control+Control+A', 'Alt+Tab', 'Alt+F4', 'Hyper+A', 'Control+Alt+Shift+Super+A']) {
     assert.equal(isValidHotkey(bad), false, String(bad));
   }
   assert.equal(editSettings('setHotkey', { hotkey: 'Alt+F9' }, TOOL_MODES).ok, true);

@@ -44,6 +44,7 @@ let hideTimer = null;
 let activeHotkey = null;
 let quitting = false;
 let turnActive = false; // триває запис, запит до моделі або озвучення
+let hotkeySuspended = false; // гарячу клавішу тимчасово знято, поки користувач записує нову
 let dialogOpen = false; // відкрито системне вікно вибору файлу: панель у цей час не ховаємо
 let turnCancelled = false; // користувач зупинив поточний хід (Esc, ■, «Нова розмова»)
 let speech = null;
@@ -93,6 +94,7 @@ function togglePanel() {
 
 // Гаряча клавіша: з голосом — «говорити / досить / замовкни», без голосу — показати або сховати панель
 function onHotkey() {
+  if (dialogOpen) return; // відкрито вікно вибору файлу — розмову зараз не починаємо
   if (state === 'listening') speech.stopListening();
   else if (state === 'speaking') speech.cancel();
   else if (turnActive) showPanel({ focus: false });
@@ -104,7 +106,7 @@ function onHotkey() {
 function scheduleAutoHide() {
   clearTimeout(hideTimer);
   hideTimer = setTimeout(() => {
-    if (win?.isVisible() && !win.isFocused() && (state === 'idle' || state === 'error') && pendingConfirms.size === 0) win.hide();
+    if (win?.isVisible() && !win.isFocused() && (state === 'idle' || state === 'error') && pendingConfirms.size === 0 && !dialogOpen) win.hide();
   }, AUTO_HIDE_MS);
 }
 
@@ -130,6 +132,8 @@ function createWindow() {
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.on('blur', () => {
+    // панель втратила фокус посеред запису нової клавіші — повертаємо гарячу клавішу на місце
+    if (hotkeySuspended) { hotkeySuspended = false; applyConfig(); send({ type: 'capture-end' }); }
     if ((state === 'idle' || state === 'error') && pendingConfirms.size === 0 && !dialogOpen && !SHOT) hidePanel();
   });
   win.on('close', (e) => {
@@ -257,6 +261,7 @@ function endTurn() {
 
 function setSpeakReplies(value) {
   config.speakReplies = value === true;
+  logAction({ tool: 'settings', args: { change: 'speakReplies', on: config.speakReplies }, decision: 'user', ok: true });
   if (!saveSetting('speakReplies', config.speakReplies)) send({ type: 'notice', text: 'Не вдалося зберегти налаштування озвучення — воно діятиме до перезапуску.' });
   if (!config.speakReplies && state === 'speaking') speech?.cancel();
   send({ type: 'speak-setting', value: config.speakReplies });
@@ -347,7 +352,12 @@ async function pickPath(kind) {
 
 function changeSettings(change, payload) {
   const result = editSettings(change, payload, TOOL_MODES);
-  logAction({ tool: 'settings', args: { change, ...payload }, decision: 'user', ok: result.ok, ...(result.ok ? {} : { error: result.error }) });
+  // у журнал — лише прості поля з відомими назвами
+  const args = { change };
+  for (const field of ['key', 'name', 'closable', 'exe', 'dir', 'ext', 'list', 'on', 'hotkey']) {
+    if (['string', 'boolean'].includes(typeof payload?.[field])) args[field] = payload[field];
+  }
+  logAction({ tool: 'settings', args, decision: 'user', ok: result.ok, ...(result.ok ? {} : { error: result.error }) });
   if (result.ok) {
     applyConfig();
     send({ type: 'config', hotkey: activeHotkey, model: config.model, speakReplies: config.speakReplies, warnings: [] });
@@ -356,7 +366,8 @@ function changeSettings(change, payload) {
 }
 
 function changeHotkey(hotkey) {
-  if (!isValidHotkey(hotkey)) return { ok: false, error: 'Потрібне сполучення на кшталт Ctrl + Shift + Space: модифікатор і одна клавіша' };
+  hotkeySuspended = false;
+  if (!isValidHotkey(hotkey)) { applyConfig(); return { ok: false, error: 'Потрібне сполучення з Ctrl, Alt або Win і однієї клавіші, наприклад Ctrl + Shift + Space' }; }
   // спершу перевіряємо, чи Windows віддасть нам це сполучення, і лише тоді записуємо
   globalShortcut.unregisterAll();
   let free = false;
@@ -365,7 +376,9 @@ function changeHotkey(hotkey) {
     applyConfig(); // повертаємо попередню клавішу
     return { ok: false, error: 'Це сполучення вже зайняте іншою програмою або Windows. Спробуй інше.' };
   }
-  return changeSettings('setHotkey', { hotkey });
+  const result = changeSettings('setHotkey', { hotkey });
+  if (!result.ok) applyConfig(); // запис не вдався — повертаємо попередню клавішу, а не лишаємо незбережену
+  return result;
 }
 
 const SIMPLE_CHANGES = new Set(['updateApp', 'removeApp', 'updateFolder', 'removeFolder', 'setFileType']);
@@ -416,6 +429,13 @@ function registerIpc() {
   ipcMain.on('offgrid:hide', (e) => { if (trusted(e)) hidePanel(); });
   ipcMain.handle('offgrid:settings', (e, action, payload) => (trusted(e) && typeof action === 'string' ? handleSettings(action, payload) : null));
   ipcMain.handle('offgrid:log', (e) => (trusted(e) ? readLog(150) : []));
+  // Поки користувач записує нове сполучення, чинну гарячу клавішу знімаємо: інакше її натискання
+  // почало б розмову замість того, щоб потрапити в поле запису
+  ipcMain.on('offgrid:capture-hotkey', (e, on) => {
+    if (!trusted(e)) return;
+    if (on === true && !turnActive) { hotkeySuspended = true; globalShortcut.unregisterAll(); }
+    else if (hotkeySuspended) { hotkeySuspended = false; applyConfig(); }
+  });
 }
 
 // ---------- Знімок для розробки ----------

@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('offgrid', {
   ready: () => ipcRenderer.invoke('offgrid:ready'),
   settings: (action, payload) => ipcRenderer.invoke('offgrid:settings', String(action), payload),
   log: () => ipcRenderer.invoke('offgrid:log'),
+  captureHotkey: (on) => ipcRenderer.send('offgrid:capture-hotkey', on === true),
   onEvent: (handler) => {
     ipcRenderer.on('offgrid:event', (_e, event) => handler(event));
   },

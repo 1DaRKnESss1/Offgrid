@@ -158,6 +158,7 @@ window.offgrid.onEvent((event) => {
     case 'notice': add('notice', event.text); break;
     case 'reset': hideConfirm(); showEmpty(); setBusy(false); break;
     case 'focus-input': if ((window.offgridView?.current ?? 'chat') === 'chat') input.focus(); break;
+    case 'capture-end': window.offgridView?.captureEnded(); break;
     case 'open-view': window.offgridView?.show(event.view, { tab: event.tab }); break;
     case 'demo': // лише для знімка під час розробки
       add('user', 'закрий блокнот');

@@ -5,19 +5,34 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_CONFIG, SETTINGS_FILE } from '../paths.js';
-import { validateConfig, FILE_TYPE_GROUPS, OPENABLE, READABLE } from './config.js';
+import { validateConfig, resolveExe, expandFolder, FILE_TYPE_GROUPS, OPENABLE, READABLE } from './config.js';
 
 const KEY_RE = /^[a-z][a-z0-9_]{0,30}$/;
 const MAX_ITEMS = 60;
+const MISSING = 'Файл settings.json зник. Натисни «Перечитати налаштування» в меню іконки в треї — він створиться знову.';
 const BROKEN = 'Файл settings.json зіпсовано. Виправ його вручну: меню іконки в треї → «Відкрити налаштування».';
-// Гаряча клавіша: один-три модифікатори і одна звичайна клавіша
-const HOTKEY_RE = /^(?:(?:Control|Alt|Shift|Super)\+){1,3}(?:[A-Z0-9]|F(?:[1-9]|1\d|2[0-4])|Space|Tab|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right)$/;
+const HOTKEY_KEY = /^(?:[A-Z0-9]|F(?:[1-9]|1\d|2[0-4])|Space|Tab|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right)$/;
+const HOTKEY_MODS = ['Control', 'Alt', 'Shift', 'Super'];
+const RESERVED_HOTKEYS = new Set(['Alt+Tab', 'Alt+F4', 'Control+Alt+Tab', 'Alt+Space']);
+
+// Гаряча клавіша: модифікатори без повторів, серед них обов'язково Ctrl, Alt або Win (сам Shift не рахується:
+// Shift + A — це просто велика літера, і глобальна клавіша зламала б друк), плюс одна звичайна клавіша.
+function validHotkey(hotkey) {
+  if (typeof hotkey !== 'string' || hotkey.length > 40) return false;
+  const parts = hotkey.split('+');
+  const key = parts.pop();
+  if (!HOTKEY_KEY.test(key) || parts.length < 1 || parts.length > 3) return false;
+  if (new Set(parts).size !== parts.length || !parts.every((m) => HOTKEY_MODS.includes(m))) return false;
+  if (!parts.some((m) => m !== 'Shift')) return false;
+  return !RESERVED_HOTKEYS.has(hotkey);
+}
 
 const isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
 const own = (obj, key) => typeof key === 'string' && isObject(obj) && Object.hasOwn(obj, key);
 
 function readRaw() {
+  if (!fs.existsSync(SETTINGS_FILE)) throw new Error('missing');
   const raw = readJson(SETTINGS_FILE);
   if (!isObject(raw)) throw new Error('not an object');
   return raw;
@@ -26,8 +41,13 @@ function readRaw() {
 function writeRaw(raw) {
   // спершу тимчасовий файл, потім заміна: обірваний запис не залишить зіпсованих налаштувань
   const tmp = SETTINGS_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', 'utf8');
-  fs.renameSync(tmp, SETTINGS_FILE);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmp, SETTINGS_FILE);
+  } catch {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* нічого прибирати */ }
+    throw new Error('Не вдалося записати settings.json — можливо, файл лише для читання або відкритий в іншій програмі.');
+  }
 }
 
 function cleanName(name, fallback) {
@@ -64,7 +84,7 @@ export const changes = {
     if (typeof exe !== 'string' || !/\.exe$/i.test(exe)) throw new Error('Потрібен файл програми з розширенням .exe');
     const apps = section(raw, 'apps', 'map');
     if (Object.keys(apps).length >= MAX_ITEMS) throw new Error('Забагато програм у списку');
-    if (Object.values(apps).some((a) => samePath(a?.exe, exe))) throw new Error('Ця програма вже є у списку');
+    if (Object.values(apps).some((a) => samePath(resolveExe(a?.exe) ?? a?.exe, exe))) throw new Error('Ця програма вже є у списку');
     const base = path.basename(exe);
     const key = makeKey(base.replace(/\.exe$/i, ''), apps, 'app');
     apps[key] = { name: cleanName(base.replace(/\.exe$/i, ''), key), exe: path.resolve(exe) };
@@ -78,7 +98,10 @@ export const changes = {
     if (closable === true) {
       if (typeof app.exe !== 'string') throw new Error('У цієї програми не вказано файл');
       if (!app.process) app.process = path.basename(app.exe);
-    } else if (closable === false) delete app.process;
+      // назву процесу з пробілом чи іншими незвичними знаками перевірка відкине — тоді нічого не записуємо
+      return (config) => (config.apps[key]?.process ? null : 'Цю програму асистент закривати не зможе: назва її файлу містить незвичні символи.');
+    }
+    if (closable === false) delete app.process;
     return null;
   },
   removeApp(raw, { key }) {
@@ -91,7 +114,7 @@ export const changes = {
     if (typeof dir !== 'string' || !/^[a-zA-Z]:[\\/]/.test(dir)) throw new Error('Потрібна папка на локальному диску');
     const folders = section(raw, 'folders', 'map');
     if (Object.keys(folders).length >= MAX_ITEMS) throw new Error('Забагато папок у списку');
-    if (Object.values(folders).some((f) => samePath(f?.path, dir))) throw new Error('Ця папка вже є у списку');
+    if (Object.values(folders).some((f) => samePath(expandFolder(f?.path) ?? f?.path, dir))) throw new Error('Ця папка вже є у списку');
     const base = path.basename(path.resolve(dir));
     const key = makeKey(base, folders, 'folder');
     folders[key] = { name: cleanName(base, key), path: path.resolve(dir) };
@@ -119,19 +142,19 @@ export const changes = {
     return null;
   },
   setHotkey(raw, { hotkey }) {
-    if (typeof hotkey !== 'string' || !HOTKEY_RE.test(hotkey)) throw new Error('Потрібне сполучення на кшталт Ctrl + Shift + Space: модифікатор і одна клавіша');
+    if (!validHotkey(hotkey)) throw new Error('Потрібне сполучення з Ctrl, Alt або Win і однієї клавіші, наприклад Ctrl + Shift + Space');
     raw.hotkey = hotkey;
     return null;
   },
 };
 
-export const isValidHotkey = (hotkey) => typeof hotkey === 'string' && HOTKEY_RE.test(hotkey);
+export const isValidHotkey = validHotkey;
 
 /** Вносить одну правку. Повертає { ok: true } або { ok: false, error }. */
 export function editSettings(change, payload, toolModes = null) {
   if (!own(changes, change)) return { ok: false, error: 'Невідома зміна налаштувань' };
   let raw;
-  try { raw = readRaw(); } catch { return { ok: false, error: BROKEN }; }
+  try { raw = readRaw(); } catch (e) { return { ok: false, error: e.message === 'missing' ? MISSING : BROKEN }; }
   try {
     const verify = changes[change](raw, isObject(payload) ? payload : {});
     const { config, warnings } = validateConfig(raw, readJson(DEFAULT_CONFIG), toolModes);
@@ -154,6 +177,7 @@ export function settingsView(config, warnings = []) {
   const entries = (name) => (raw && isObject(raw[name]) ? raw[name] : config[name]);
   const text = (v, max = 260) => (typeof v === 'string' ? v.slice(0, max) : '');
 
+  const hidden = (name) => Math.max(0, Object.keys(entries(name)).length - MAX_ITEMS);
   const apps = Object.entries(entries('apps')).slice(0, MAX_ITEMS).map(([key, a]) => {
     const valid = Object.hasOwn(config.apps, key);
     return {
@@ -173,5 +197,5 @@ export function settingsView(config, warnings = []) {
     types: g.types.map((ext) => ({ ext, open: config.fileTypes.has(ext) })),
   }));
   const readable = [...READABLE].map((ext) => ({ ext, read: config.readableTypes.has(ext) }));
-  return { editable: raw !== null, brokenMessage: raw === null ? BROKEN : null, apps, folders, fileGroups, readable, hotkey: config.hotkey, warnings };
+  return { editable: raw !== null, brokenMessage: raw === null ? BROKEN : null, moreApps: hidden('apps'), moreFolders: hidden('folders'), apps, folders, fileGroups, readable, hotkey: config.hotkey, warnings };
 }

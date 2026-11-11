@@ -78,7 +78,9 @@ export class Agent {
     const current = () => generation === self.generation;
     const emit = (event) => { if (current()) self.emit(event); };
     const session = {
-      config: this.config,
+      // завжди чинні налаштування: якщо посеред запиту зі списку прибрали програму чи папку,
+      // наступний же виклик інструмента це врахує
+      get config() { return self.config; },
       os: this.os,
       signal,
       confirm: this.confirm,

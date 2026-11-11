@@ -28,6 +28,7 @@
   let message = '';        // остання помилка зміни
   let capturing = false;   // чекаємо на нове сполучення клавіш
   let busy = false;
+  let queued = null;       // одна зміна, що чекає, поки завершиться попередня
 
   // Маленький помічник для побудови елементів без innerHTML
   function h(tag, props = {}, ...children) {
@@ -45,20 +46,27 @@
 
   const prettyKeys = (acc) => (acc ? acc.replace('Control', 'Ctrl').replace('Super', 'Win').replaceAll('+', ' + ') : 'не задано');
 
+  function setCapturing(value) {
+    if (capturing === value) return;
+    capturing = value;
+    api.captureHotkey(value);
+  }
+
   function show(name, options = {}) {
     if (!views[name]) return;
     current = name;
-    capturing = false;
+    setCapturing(false);
     for (const [k, el] of Object.entries(views)) el.hidden = k !== name;
     document.body.dataset.view = name;
     if (name === 'settings') { if (options.tab) tab = options.tab; message = ''; request('get'); }
     else if (name === 'log') loadLog();
     else $('input').focus();
   }
-  window.offgridView = { show, get current() { return current; } };
+  window.offgridView = { show, get current() { return current; }, captureEnded() { capturing = false; render(); } };
 
   async function request(action, payload) {
-    if (busy) return;
+    // зміни не губимо: якщо попередня ще виконується, остання натиснута чекає своєї черги
+    if (busy) { queued = [action, payload]; return; }
     busy = true;
     try {
       const res = await api.settings(action, payload);
@@ -70,7 +78,7 @@
       message = String(e?.message ?? e);
     } finally {
       busy = false;
-      render();
+      if (queued) { const [a, p] = queued; queued = null; request(a, p); } else render();
     }
   }
 
@@ -92,6 +100,7 @@
     return [
       h('p', { class: 'help', text: 'Асистент може відкривати лише ці програми.' }),
       ...rows,
+      view.moreApps ? h('p', { class: 'help', text: `Ще ${view.moreApps} записів не показано — їх видно лише у файлі налаштувань.` }) : null,
       h('button', { type: 'button', class: 'add', disabled: !view.editable, onclick: () => request('addApp') }, '+ Додати програму…'),
     ];
   }
@@ -108,6 +117,7 @@
     return [
       h('p', { class: 'help', text: 'Асистент шукає, відкриває й читає файли лише в цих папках (разом із вкладеними).' }),
       ...rows,
+      view.moreFolders ? h('p', { class: 'help', text: `Ще ${view.moreFolders} записів не показано — їх видно лише у файлі налаштувань.` }) : null,
       h('button', { type: 'button', class: 'add', disabled: !view.editable, onclick: () => request('addFolder') }, '+ Додати папку…'),
     ];
   }
@@ -137,9 +147,9 @@
       h('div', { class: 'hotkey-row' },
         h('span', { class: 'hotkey', text: capturing ? 'Натисни нове сполучення…' : prettyKeys(activeHotkey ?? view.hotkey) }),
         h('button', { type: 'button', disabled: !view.editable,
-          onclick: () => { capturing = !capturing; message = ''; render(); } }, capturing ? 'Скасувати' : 'Змінити')),
+          onclick: () => { setCapturing(!capturing); message = ''; render(); } }, capturing ? 'Скасувати' : 'Змінити')),
       h('p', { class: 'help', text: capturing
-        ? 'Утримуй Ctrl, Alt, Shift або Win і натисни клавішу. Esc — скасувати.'
+        ? 'Утримуй Ctrl, Alt або Win (можна разом із Shift) і натисни клавішу. Esc — скасувати.'
         : differs ? `У налаштуваннях записано ${prettyKeys(view.hotkey)}, але вона зайнята іншою програмою.`
           : !activeHotkey ? 'Жодну клавішу не вдалося зареєструвати — обери іншу.' : 'Нею ти починаєш говорити, зупиняєш запис і перебиваєш відповідь.' }),
       h('div', { class: 'group-title', text: 'Файл налаштувань' }),
@@ -156,11 +166,11 @@
     root.replaceChildren(...[
       h('div', { class: 'tabs', role: 'tablist' }, ...TABS.map(([id, title]) => h('button', {
         type: 'button', role: 'tab', class: 'tab', 'aria-selected': String(id === tab),
-        onclick: () => { tab = id; capturing = false; message = ''; render(); } }, title))),
+        onclick: () => { tab = id; setCapturing(false); message = ''; render(); } }, title))),
       view.brokenMessage ? h('div', { class: 'msg notice', text: view.brokenMessage }) : null,
       message ? h('div', { class: 'msg error', role: 'alert', text: message }) : null,
       ...(view.warnings ?? []).slice(0, 6).map((w) => h('div', { class: 'msg notice', text: w })),
-      h('div', { class: 'tab-body' }, ...body),
+      h('div', { class: 'tab-body' }, ...body.filter(Boolean)),
     ].filter(Boolean));
     root.querySelector('.tab-body').scrollTop = keep;
   }
@@ -172,13 +182,13 @@
     if (!capturing) return;
     e.preventDefault();
     e.stopPropagation();
-    if (e.key === 'Escape') { capturing = false; render(); return; }
+    if (e.key === 'Escape') { setCapturing(false); render(); return; }
     const code = e.code;
     const key = /^Key[A-Z]$/.test(code) ? code.slice(3) : /^Digit\d$/.test(code) ? code.slice(5) : /^F\d{1,2}$/.test(code) ? code : KEY_NAMES[code];
     if (!key) return; // натиснуто лише модифікатор або непридатну клавішу — чекаємо далі
     const mods = [e.ctrlKey && 'Control', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Super'].filter(Boolean);
-    if (mods.length === 0) { message = 'Додай Ctrl, Alt, Shift або Win — одна клавіша без них заважала б друкувати.'; render(); return; }
-    capturing = false;
+    if (!mods.some((m) => m !== 'Shift')) { message = 'Додай Ctrl, Alt або Win — без них клавіша заважала б друкувати.'; render(); return; }
+    capturing = false; // гарячу клавішу поверне (або замінить) головний процес під час збереження
     request('setHotkey', { hotkey: [...mods.slice(0, 3), key].join('+') });
   }, true);
 
@@ -205,19 +215,24 @@
     root.replaceChildren(
       h('p', { class: 'help', text: `Останні дії асистента (${entries.length}), найновіші зверху. Повний журнал — у файлі data/actions.log.` }),
       ...entries.map((entry) => {
-        const [label, kind] = DECISIONS[entry.decision] ?? [String(entry.decision ?? ''), 'bad'];
-        const failed = entry.ok === false && kind === 'ok';
-        const detail = entry.ok === false ? entry.error : entry.message;
-        const args = describeArgs(entry.args);
-        return h('div', { class: 'entry' },
-          h('div', { class: 'entry-head' },
-            h('span', { class: 'entry-time', text: formatTime(entry.time) }),
-            h('span', { class: 'entry-tool', text: TOOL_NAMES[entry.tool] ?? String(entry.tool ?? '') }),
-            h('span', { class: `badge ${failed ? 'bad' : kind}`, text: failed ? 'не вдалося' : label })),
-          detail ? h('div', { class: 'entry-detail', text: String(detail) }) : null,
-          args ? h('div', { class: 'entry-args', text: args }) : null);
-      }),
+        try { return renderEntry(entry); } catch { return null; } // кривий рядок журналу просто пропускаємо
+      }).filter(Boolean),
     );
+  }
+
+  function renderEntry(entry) {
+    const known = (table, key) => (typeof key === 'string' && Object.hasOwn(table, key) ? table[key] : null);
+    const [label, kind] = known(DECISIONS, entry.decision) ?? [String(entry.decision ?? '').slice(0, 30), 'bad'];
+    const failed = entry.ok === false && kind === 'ok';
+    const detail = entry.ok === false ? entry.error : entry.message;
+    const args = describeArgs(entry.args);
+    return h('div', { class: 'entry' },
+      h('div', { class: 'entry-head' },
+        h('span', { class: 'entry-time', text: formatTime(entry.time) }),
+        h('span', { class: 'entry-tool', text: known(TOOL_NAMES, entry.tool) ?? String(entry.tool ?? '').slice(0, 40) }),
+        h('span', { class: `badge ${failed ? 'bad' : kind}`, text: failed ? 'не вдалося' : label })),
+      detail ? h('div', { class: 'entry-detail', text: String(detail).slice(0, 400) }) : null,
+      args ? h('div', { class: 'entry-args', text: args }) : null);
   }
 
   $('open-settings').addEventListener('click', () => show(current === 'settings' ? 'chat' : 'settings'));
