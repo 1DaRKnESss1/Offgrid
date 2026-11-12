@@ -14,7 +14,7 @@ import { ping } from '../agent/ollama.js';
 import { nodeOs } from '../tools/util.js';
 import { Speech } from '../speech/client.js';
 import { SentenceSplitter } from '../speech/sentences.js';
-import { isFiller } from '../agent/tone.js';
+import { finalTail } from '../agent/tone.js';
 import { iconPng } from './icon.js';
 
 const INDEX_HTML = path.join(ROOT, 'src', 'renderer', 'index.html');
@@ -25,6 +25,9 @@ const CONFIRM_TIMEOUT_MS = 60_000;
 const AUTO_HIDE_MS = 9_000;
 const ERROR_SHOWN_MS = 5_000;
 const FOLLOW_UP_WAIT_S = 5; // скільки чекати на продовження розмови після відповіді
+// Стільки разів поспіль асистент слухає «продовження» сам. Далі потрібна клавіша: так розмова не може
+// тривати без кінця, якщо в кімнаті говорить телевізор, а людини поруч немає.
+const MAX_FOLLOW_UPS = 4;
 const FALLBACK_HOTKEYS = ['Control+Shift+Space', 'Alt+Shift+Space', 'Control+Alt+O'];
 const SHOT = process.env.OFFGRID_SHOT; // лише для розробки: зберегти знімок панелі й вийти
 
@@ -51,7 +54,10 @@ let hotkeySuspended = false; // гарячу клавішу тимчасово �
 let dialogOpen = false; // відкрито системне вікно вибору файлу: панель у цей час не ховаємо
 let turnCancelled = false;
 let listenNext = false;   // після цього ходу одразу слухати (відповідь перебито гарячою клавішею)
-let replySink = null;     // куди йде текст відповіді, поки модель його пише // користувач зупинив поточний хід (Esc, ■, «Нова розмова»)
+let replySink = null;     // куди йде текст відповіді, поки модель його пише
+let turnSpoke = false;    // у цьому ході вже щось пішло на озвучення
+let listeningAuto = false; // зараз іде автоматичне «продовження», а не запис за клавішею
+let heardSpeech = false;  // у поточному записі вже почуто мову // користувач зупинив поточний хід (Esc, ■, «Нова розмова»)
 let speech = null;
 let speechConfigKey = '';
 const pendingConfirms = new Map();
@@ -100,9 +106,12 @@ function togglePanel() {
 // Гаряча клавіша: з голосом — «говорити / досить / замовкни», без голосу — показати або сховати панель
 function onHotkey() {
   if (dialogOpen) return; // відкрито вікно вибору файлу — розмову зараз не починаємо
-  if (state === 'listening') speech.stopListening();
-  // перебити відповідь: замовкнути й одразу слухати, що ти скажеш
-  else if (state === 'speaking') { listenNext = true; speech.cancel(); }
+  if (state === 'listening') {
+    // під час «продовження», поки ти ще мовчиш, клавіша означає «слухай мене», а не «досить»
+    if (listeningAuto && !heardSpeech) { listenNext = true; speech.cancel(); } else speech.stopListening();
+  }
+  // перебити відповідь (навіть якщо модель її ще дописує): замовкнути й одразу слухати
+  else if (state === 'speaking' || (turnActive && turnSpoke)) { listenNext = true; agent.cancel(); speech.cancel(); }
   else if (turnActive) showPanel({ focus: false });
   else if (speech?.ready) startListening();
   else togglePanel();
@@ -269,7 +278,7 @@ function setSpeakReplies(value) {
   config.speakReplies = value === true;
   logAction({ tool: 'settings', args: { change: 'speakReplies', on: config.speakReplies }, decision: 'user', ok: true });
   if (!saveSetting('speakReplies', config.speakReplies)) send({ type: 'notice', text: 'Не вдалося зберегти налаштування озвучення — воно діятиме до перезапуску.' });
-  if (!config.speakReplies && state === 'speaking') speech?.cancel();
+  if (!config.speakReplies && (state === 'speaking' || turnSpoke)) speech?.cancel();
   send({ type: 'speak-setting', value: config.speakReplies });
   rebuildTrayMenu();
 }
@@ -280,26 +289,54 @@ function setSpeakReplies(value) {
 async function runTurn(text, { voice = false } = {}) {
   const generation = agent.generation;
   const current = () => generation === agent.generation; // false, якщо посеред ходу почали нову розмову
-  const mayTalk = () => (config.speakReplies || process.env.OFFGRID_SHOT_SOUND) && speech?.ready && !turnCancelled && current() && (!SHOT || process.env.OFFGRID_SHOT_SOUND); // у режимі знімка зазвичай мовчимо
-  let spoke = false;        // хоча б одне речення пішло на озвучення
+  const mayTalk = () => (config.speakReplies || process.env.OFFGRID_SHOT_SOUND) && speech?.ready
+    && !turnCancelled && current() && (!SHOT || process.env.OFFGRID_SHOT_SOUND); // у режимі знімка зазвичай мовчимо
+  let raw = '';             // текст, який модель написала в поточному кроці
+  let held = [];            // речення, які ще не пішли на озвучення (запитання наприкінці притримуємо)
+  let epoch = 0;            // зростає, коли вже поставлене в чергу треба відкинути
+  let said = false;         // мовний сервіс справді прийняв хоча б одне речення
   let speechBroken = false;
   let queue = Promise.resolve(); // речення йдуть до мовного сервісу строго по черзі
+  turnSpoke = false;
 
-  const sayNext = (sentence) => {
-    if (speechBroken || !mayTalk() || isFiller(sentence)) return;
-    spoke = true;
-    queue = queue.then(async () => {
-      if (speechBroken || turnCancelled || !current()) return;
-      await speech.say(sentence);
-    }).catch((e) => {
-      speechBroken = true;
-      if (current()) send({ type: 'notice', text: `Не вдалося озвучити: ${e.message}` });
-    });
+  const breakSpeech = (e) => {
+    speechBroken = true;
+    speech?.cancel(); // те, що вже звучить, без нашого нагляду лишати не можна
+    if (current()) send({ type: 'notice', text: `Не вдалося озвучити: ${e.message}` });
   };
-  const splitter = new SentenceSplitter(sayNext);
+  const enqueue = (sentence) => {
+    if (speechBroken || !mayTalk()) return;
+    turnSpoke = true;
+    const mine = epoch;
+    queue = queue.then(async () => {
+      if (speechBroken || turnCancelled || listenNext || mine !== epoch || !current()) return;
+      if (await speech.say(sentence)) said = true;
+    }).catch(breakSpeech);
+  };
+  // Речення-запитання притримуємо: якщо воно виявиться останнім, остаточний текст вирішить, чи його казати
+  // (чергове «чим ще допомогти?» з відповіді прибирається). Решта звучить одразу.
+  const onSentence = (sentence) => {
+    for (const earlier of held) enqueue(earlier);
+    held = [];
+    if (sentence.endsWith('?')) held.push(sentence); else enqueue(sentence);
+  };
+  const splitter = new SentenceSplitter(onSentence);
   replySink = {
-    delta(piece) { if (current()) { send({ type: 'reply-delta', text: piece }); splitter.push(piece); } },
-    reset() { splitter.reset(); if (current()) send({ type: 'reply-reset' }); },
+    delta(piece) {
+      if (!current()) return;
+      raw += piece;
+      send({ type: 'reply-delta', text: piece });
+      splitter.push(piece);
+    },
+    // текст виявився не відповіддю, а вступом перед викликом інструмента
+    reset() {
+      splitter.reset();
+      held = [];
+      raw = '';
+      epoch++;
+      if (turnSpoke) speech?.cancel();
+      if (current()) send({ type: 'reply-reset' });
+    },
   };
 
   try {
@@ -307,26 +344,32 @@ async function runTurn(text, { voice = false } = {}) {
     replySink = null;
     if (!current()) return false;
     splitter.flush();
+    // якщо потоком нічого не надходило (службова відповідь) — озвучуємо її цілком
+    const tail = raw ? finalTail(held, raw, reply) : reply;
+    held = [];
+    if (tail) enqueue(tail);
     send({ type: 'assistant', text: reply });
     let interrupted = false;
-    if (spoke) {
+    if (turnSpoke) {
       setState('speaking');
       await queue;
       if (!speechBroken) {
-        try { interrupted = (await speech.finishSpeaking()).interrupted; } catch (e) { if (current()) send({ type: 'notice', text: `Не вдалося озвучити: ${e.message}` }); }
+        try { interrupted = (await speech.finishSpeaking()).interrupted; } catch (e) { breakSpeech(e); }
       }
     }
     if (!current() || turnCancelled) return false;
     if (listenNext) return true;                       // відповідь перебито гарячою клавішею
-    return voice && spoke && !interrupted && !speechBroken && config.followUp; // розмова голосом триває
+    return voice && said && !interrupted && !speechBroken && config.followUp; // розмова голосом триває
   } catch (e) {
     denyAllConfirms();
-    if (spoke) speech?.cancel();
+    if (turnSpoke) speech?.cancel();
     if (!current()) return false;
+    if (listenNext && !turnCancelled) return true;     // перебито клавішею, поки модель ще дописувала відповідь
     if (e.message === 'Скасовано') send({ type: 'stopped' }); else showError(e.message);
     return false;
   } finally {
     replySink = null;
+    turnSpoke = false;
   }
 }
 
@@ -353,10 +396,16 @@ async function startListening() {
   turnActive = true;
   turnCancelled = false;
   send({ type: 'busy', value: true });
+  let autoListens = 0; // скільки разів поспіль слухали без клавіші
   try {
     for (let followUp = false; ; followUp = true) {
       const byKey = listenNext; // цей запис почато клавішею (перебивання), а не автоматичним «продовженням»
       listenNext = false;
+      const auto = followUp && !byKey;
+      if (!auto) autoListens = 0;
+      else if (++autoListens > MAX_FOLLOW_UPS) return;
+      listeningAuto = auto;
+      heardSpeech = false;
       setState('listening');
       showPanel({ focus: false });
       const generation = agent.generation;
@@ -364,26 +413,34 @@ async function startListening() {
       try {
         heard = await speech.listen((event) => {
           if (event.type === 'partial') send({ type: 'partial', text: event.text });
-          else if (event.type === 'speech') send({ type: 'partial', text: '' });
+          else if (event.type === 'speech') { heardSpeech = true; send({ type: 'partial', text: '' }); }
           else if (event.type === 'recognizing') setState('thinking');
-        }, followUp && !byKey ? { waitSeconds: FOLLOW_UP_WAIT_S } : {});
+          // без клавіші початком мови вважаємо лише стійкий звук, а не випадковий клац чи стукіт
+        }, auto ? { waitSeconds: FOLLOW_UP_WAIT_S, strict: true } : {});
       } catch (e) {
         send({ type: 'partial-end' });
         showError(e.message);
         return;
+      } finally {
+        listeningAuto = false;
       }
       send({ type: 'partial-end' });
       // turnCancelled ловить і скасування, що прийшло в останню мить, коли текст уже розпізнано
-      if (generation !== agent.generation || turnCancelled || heard.cancelled) return;
+      if (generation !== agent.generation || turnCancelled) return;
+      if (heard.cancelled) {
+        if (listenNext) continue; // клавіша під час «продовження»: слухаємо знову, тепер уже як за викликом
+        return;
+      }
       if (!heard.text) {
         // після відповіді тиша — це просто кінець розмови; на прямий виклик кажемо, що нічого не почули
-        if (!followUp || byKey) send({ type: 'soft', text: 'Нічого не почув.' });
+        if (!auto) send({ type: 'soft', text: 'Нічого не почув.' });
         return;
       }
       send({ type: 'user', text: heard.text });
       if (!(await runTurn(heard.text, { voice: true }))) return;
     }
   } finally {
+    listeningAuto = false;
     endTurn();
   }
 }

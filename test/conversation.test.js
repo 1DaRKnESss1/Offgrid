@@ -125,3 +125,116 @@ test('потокова відповідь: скасування обриває �
     await assert.rejects(() => pending, /Скасовано/);
   } finally { server.closeAllConnections(); server.close(); }
 });
+
+// ---------- Додано за результатами рев'ю етапу 4 ----------
+const { finalTail } = await import('../src/agent/tone.js');
+
+test('запитання по суті, що містять «ще», не вважаються черговими', () => {
+  for (const keep of [
+    'Файл не знайдено. Чи шукати ще в папці Завантаження?',
+    'Відкрив звіт. Чи відкрити ще один файл?',
+    'Гучність 40. Чи зробити ще тихіше?',
+    'Записав молоко. Що ще записати до списку?',
+    'Не вийшло. Як ще можна спробувати?',
+    'Знайшов три файли. Чи показати ще?',
+  ]) assert.equal(stripFiller(keep), keep, keep);
+  for (const [from, to] of [
+    ['Гучність зменшено. Чим ще можу тобі допомогти?', 'Гучність зменшено.'],
+    ['Усе записав. Що ще тебе цікавить?', 'Усе записав.'],
+    ['Готово. Чи потрібна ще допомога?', 'Готово.'],
+  ]) assert.equal(stripFiller(from), to, from);
+});
+
+test('озвучується те саме, що показано: прибраний хвіст не звучить навіть після короткого речення', () => {
+  // коротке «Готово.» зливається з наступним реченням — хвіст має зникнути й з озвучення
+  const say = (raw) => {
+    const said = [];
+    let held = [];
+    const s = new SentenceSplitter((x) => { said.push(...held); held = []; if (x.endsWith('?')) held.push(x); else said.push(x); });
+    for (const ch of raw) s.push(ch);
+    s.flush();
+    const tail = finalTail(held, raw, stripFiller(raw));
+    if (tail) said.push(tail);
+    return said.join(' ');
+  };
+  assert.equal(say('Готово. Що ще потрібно?'), 'Готово.');
+  assert.equal(say('Привіт! Чим ще можу допомогти?'), 'Привіт!');
+  assert.equal(say('Блокнот відкрито, можеш писати. Чим ще можу допомогти?'), 'Блокнот відкрито, можеш писати.');
+  assert.equal(say('Знайшов два файли зі звітом. Який із них відкрити?'), 'Знайшов два файли зі звітом. Який із них відкрити?');
+  assert.equal(say('Чим ще можу допомогти?'), 'Чим ще можу допомогти?'); // єдине речення лишається і на екрані, і в озвученні
+  assert.equal(say('Котру з двох нотаток прочитати? Першу чи другу?'), 'Котру з двох нотаток прочитати? Першу чи другу?');
+});
+
+test('речення: крапка після скорочення — не кінець речення', () => {
+  assert.deepEqual(split(['Це на вул. Шевченка, буд. 5, біля парку. ', 'Іти близько 10 хв. пішки.']),
+    ['Це на вул. Шевченка, буд. 5, біля парку.', 'Іти близько 10 хв. пішки.']);
+  assert.deepEqual(split(['Зараз 16:50. ', 'Сьогодні середа.']), ['Зараз 16:50.', 'Сьогодні середа.']);
+});
+
+// Агент із підробленою Ollama: що саме він надсилає моделі та що лишає в історії
+test('агент: нагадування про інструменти йде лише в запит і лише до останньої репліки користувача', async () => {
+  process.env.OFFGRID_DATA ??= new URL('./.tmp/conv-test/data', import.meta.url).pathname.slice(1);
+  const fs = await import('node:fs');
+  const { Agent } = await import('../src/agent/agent.js');
+  const { validateConfig } = await import('../src/security/config.js');
+  const defaults = JSON.parse(fs.readFileSync(new URL('../config/default.json', import.meta.url), 'utf8'));
+  const bodies = [];
+  let step = 0;
+  const { server, url } = await fakeOllama((req, res) => {
+    let body = '';
+    req.on('data', (d) => { body += d; });
+    req.on('end', () => {
+      bodies.push(JSON.parse(body));
+      step++;
+      res.writeHead(200);
+      if (step === 1) {
+        // текст перед викликом інструмента — «вступ», який треба прибрати з екрана
+        res.write(line({ message: { content: 'Зараз гляну. ' } }));
+        res.write(line({ message: { content: '', tool_calls: [{ function: { name: 'get_time', arguments: {} } }] } }));
+      } else {
+        res.write(line({ message: { content: 'Зараз 16:50. Чим ще можу допомогти?' } }));
+      }
+      res.end(line({ message: { content: '' }, done: true }));
+    });
+  });
+  try {
+    const { config } = validateConfig({ ...defaults, ollamaUrl: url, speech: { enabled: false }, apps: {}, folders: {} }, defaults);
+    const events = [];
+    const agent = new Agent({ config, os: {}, confirm: async () => false, emit: (e) => events.push(e) });
+    const reply = await agent.ask('котра година?');
+    assert.equal(reply, 'Зараз 16:50.');
+    // крок 1 і крок 2: нагадування є в останній репліці користувача
+    for (const b of bodies) {
+      const users = b.messages.filter((m) => m.role === 'user');
+      assert.match(users.at(-1).content, /Нагадування асистенту/);
+      assert.equal(b.stream, true);
+    }
+    // в історії — чистий текст без нагадування і без чергового запитання
+    assert.equal(agent.messages[0].content, 'котра година?');
+    assert.equal(agent.messages.at(-1).content, 'Зараз 16:50.');
+    assert.ok(agent.messages.every((m) => !String(m.content).includes('Нагадування асистенту')));
+    const types = events.map((e) => e.type);
+    assert.ok(types.indexOf('reply-reset') > types.indexOf('reply-delta'), 'після вступу перед інструментом має бути reply-reset');
+    assert.equal(events.filter((e) => e.type === 'tool')[0].name, 'get_time');
+    // друга репліка: нагадування переїжджає на неї, зі старої зникає
+    step = 1;
+    await agent.ask('дякую');
+    const users = bodies.at(-1).messages.filter((m) => m.role === 'user');
+    assert.equal(users.length, 2);
+    assert.ok(!users[0].content.includes('Нагадування асистенту'));
+    assert.ok(users[1].content.includes('Нагадування асистенту'));
+  } finally {
+    server.close();
+    fs.rmSync(new URL('./.tmp/conv-test', import.meta.url), { recursive: true, force: true });
+  }
+});
+
+test('потокова відповідь: рядок з помилкою посеред відповіді не губиться', async () => {
+  const { server, url } = await fakeOllama((req, res) => {
+    res.writeHead(200);
+    res.end(line({ message: { content: 'Поч' } }) + line({ error: 'model runner has unexpectedly stopped' }));
+  });
+  try {
+    await assert.rejects(() => chat({ ollamaUrl: url, model: 'x' }, [], [], undefined, () => {}), /Ollama повернула помилку/);
+  } finally { server.close(); }
+});

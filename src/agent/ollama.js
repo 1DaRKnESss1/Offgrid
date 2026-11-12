@@ -15,7 +15,11 @@ export async function chat(config, messages, tools, signal, onDelta = () => {}) 
     return await chatOnce(config, messages, tools, signal, onDelta);
   } catch (e) {
     if (!e.retryable || signal?.aborted) throw e;
-    await new Promise((r) => setTimeout(r, 2000));
+    // пауза перед повтором не має затримувати скасування
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 2000);
+      signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+    });
     if (signal?.aborted) throw new Error(CANCELLED);
     return chatOnce(config, messages, tools, signal, onDelta);
   }

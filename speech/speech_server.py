@@ -16,9 +16,10 @@
   POST /listen  -> слухає мікрофон; відповідь — потік рядків JSON:
                    {"type":"listening"} {"type":"speech"} {"type":"partial","text":..} ...
                    {"type":"recognizing"} {"type":"final","text":..}
+                   тіло (необов'язково) {"wait_s": 5, "strict": true}: скільки чекати на початок мови;
+                   strict — початком мови вважати лише стійкий звук, а не один гучний клац
   POST /stop    -> закінчити запис зараз і розпізнати те, що встигли сказати
   POST /cancel  -> скасувати запис без розпізнавання і зупинити озвучення
-                   тіло (необов'язково) {"wait_s": 5} — скільки чекати на початок мови
   POST /say     -> тіло {"text": "речення"}; додає речення до озвучення й одразу повертається
   POST /say-done-> більше речень не буде; чекає, доки все прозвучить: {"ok":true,"interrupted":..,"audio_s":..}
   POST /speak   -> те саме, що /say і /say-done разом (один текст цілком)
@@ -79,6 +80,8 @@ PRE_ROLL_S = 0.4           # скільки звуку ДО спрацюванн
 SILENCE_TO_STOP_S = 1.0    # стільки тиші після мови = кінець фрази
 SPECULATE_AFTER_S = 0.35   # після такої паузи починаємо точне розпізнавання «наперед»
 SPECULATE = os.environ.get("OFFGRID_WHISPER_AHEAD", "1") != "0"
+STRICT_SPEECH_S = 0.25     # у режимі strict стільки звуку поспіль має бути гучнішим за поріг
+SETTLE_AFTER_SPEECH_S = 0.4  # пауза між кінцем власного голосу й початком запису: колонки й відлуння мають затихнути
 MAX_RECORD_S = 20          # максимальна довжина фрази
 WAIT_FOR_SPEECH_S = 8      # якщо стільки мовчиш — повертаємо порожній текст
 MIN_THRESHOLD = 0.01       # мінімальний поріг гучності (RMS)
@@ -136,6 +139,8 @@ if SPECULATE:
                                           download_root=WHISPER_DIR, local_files_only=True), threading.Lock()))
     except Exception as e:  # noqa: BLE001 — без другого примірника працюємо як раніше
         log(f"Другий примірник '{WHISPER_MODEL}' не завантажився: {e}")
+# з одним примірником зайве розпізнавання наперед затримувало б справжнє — тоді його не робимо
+SPECULATE = SPECULATE and len(FINAL_MODELS) > 1
 
 # ---------- Мікрофон ----------
 THRESHOLD = MIN_THRESHOLD
@@ -179,9 +184,10 @@ def acquire_final(wait=True):
             return model, lock
     if not wait:
         return None
-    model, lock = FINAL_MODELS[-1]
-    lock.acquire()
-    return model, lock
+    while True:  # беремо той примірник, що звільниться першим
+        for model, lock in FINAL_MODELS:
+            if lock.acquire(timeout=0.02):
+                return model, lock
 
 
 def transcribe(audio, quick=False):
@@ -220,7 +226,7 @@ class Speculation:
             self.done.set()
 
 
-def listen(emit, wait_s=WAIT_FOR_SPEECH_S):
+def listen(emit, wait_s=WAIT_FOR_SPEECH_S, strict=False):
     """Пише з мікрофона до паузи. emit(dict) надсилає подію клієнту. Повертає нічого: усе через emit."""
     if MIC_ERROR:
         calibrate()
@@ -233,7 +239,9 @@ def listen(emit, wait_s=WAIT_FOR_SPEECH_S):
     speech_mark = 0     # кількість шматків звуку на момент останнього почутого мовлення
     spec = None         # останнє розпізнавання «наперед»
     quiet_levels = []   # гучність, поки чекали на мову: з неї уточнюємо поріг
-    pre_roll = deque(maxlen=int(PRE_ROLL_S / BLOCK_S))
+    pre_roll = deque(maxlen=int((PRE_ROLL_S + (STRICT_SPEECH_S if strict else 0)) / BLOCK_S))
+    need_loud = STRICT_SPEECH_S if strict else 0.0  # скільки гучного звуку треба, щоб вважати це мовою
+    loud = 0.0
     finished = threading.Event()   # після цього проміжні результати вже не надсилаємо
     partial_busy = threading.Event()
     last_partial = 0.0
@@ -259,7 +267,8 @@ def listen(emit, wait_s=WAIT_FOR_SPEECH_S):
                 rms = float(np.sqrt(np.mean(data ** 2)))
                 if not started:
                     waited += BLOCK_S
-                    if rms > THRESHOLD:
+                    loud = loud + BLOCK_S if rms > THRESHOLD else max(0.0, loud - BLOCK_S)
+                    if rms > THRESHOLD and loud >= need_loud:
                         started = True
                         chunks.extend(pre_roll)
                         chunks.append(data.copy())
@@ -282,11 +291,15 @@ def listen(emit, wait_s=WAIT_FOR_SPEECH_S):
                 if silence >= SILENCE_TO_STOP_S or total >= MAX_RECORD_S:
                     break
                 # коротка пауза: починаємо точне розпізнавання наперед (якщо для цього мовлення ще не починали)
+                # (одне за раз: поки попереднє не закінчилось, другий примірник моделі лишається вільним для справжнього)
                 if (SPECULATE and silence >= SPECULATE_AFTER_S and total >= 0.5
-                        and (spec is None or spec.speech_mark != speech_mark)):
+                        and (spec is None or (spec.done.is_set() and spec.speech_mark != speech_mark))):
                     slot = acquire_final(wait=False)
                     if slot is not None:
-                        spec = Speculation(np.concatenate(chunks).flatten(), speech_mark, slot)
+                        try:
+                            spec = Speculation(np.concatenate(chunks).flatten(), speech_mark, slot)
+                        except Exception:  # noqa: BLE001 — потік не стартував: замок треба повернути
+                            slot[1].release()
                 # проміжний текст: розпізнаємо все сказане досі, якщо попереднє розпізнавання вже закінчилось
                 if (whisper_live is not None and silence < SPECULATE_AFTER_S and total - last_partial >= PARTIAL_EVERY_S
                         and total >= 0.6 and not partial_busy.is_set()):
@@ -348,17 +361,27 @@ class Speaker:
         self.chars = 0
         self.started_at = 0.0
         self.first_audio_s = 0.0
+        self.fresh = False         # було нове висловлювання, про яке finish() ще не звітував
+        self.ending = False        # кінець висловлювання вже в черзі, але воно ще звучить
+        self.playing = False       # вихідний потік звуку відкрито
+        self.ended_at = 0.0        # коли звук востаннє замовк
         self.texts = queue.Queue()  # (gen, текст) або (gen, None) — кінець висловлювання
         self.audio = queue.Queue()  # (gen, масив, частота) або (gen, None, None)
         threading.Thread(target=self._synth_loop, daemon=True).start()
         threading.Thread(target=self._play_loop, daemon=True).start()
 
     def say(self, text):
+        # попереднє висловлювання ще договорюється після finish(): нове починаємо, коли воно закінчиться
+        for _ in range(600):
+            if not self.ending:
+                break
+            self.done.wait(0.1)
         with self.lock:
             if not self.active:
                 self.active, self.interrupted, self.error = True, False, None
                 self.audio_s, self.chars, self.first_audio_s = 0.0, 0, 0.0
                 self.started_at = time.perf_counter()
+                self.fresh = True
                 self.done.clear()
             room = MAX_SPEAK_CHARS - self.chars
             if room <= 0:
@@ -371,11 +394,16 @@ class Speaker:
     def finish(self):
         """Більше тексту не буде. Чекає, доки все прозвучить, і повертає підсумок."""
         with self.lock:
-            if self.active:
+            if not self.fresh:  # нічого нового не говорили — старий підсумок не повторюємо
+                return {"interrupted": False, "audio_s": 0.0, "first_audio_s": 0.0, "error": None}
+            if self.active and not self.ending:
+                self.ending = True
                 self.texts.put((self.gen, None))
         self.done.wait()
-        return {"interrupted": self.interrupted, "audio_s": self.audio_s, "first_audio_s": self.first_audio_s,
-                "error": self.error}
+        with self.lock:
+            self.fresh = False
+            return {"interrupted": self.interrupted, "audio_s": self.audio_s, "first_audio_s": self.first_audio_s,
+                    "error": self.error}
 
     def cancel(self):
         with self.lock:
@@ -385,6 +413,7 @@ class Speaker:
             self.gen += 1
             self.interrupted = True
             self.active = False
+            self.ending = False
             for q in (self.texts, self.audio):
                 try:
                     while True:
@@ -401,6 +430,7 @@ class Speaker:
             self.error = message
             self.gen += 1
             self.active = False
+            self.ending = False
             self.audio.put((gen, None, None))
             self.done.set()
 
@@ -436,6 +466,8 @@ class Speaker:
                     stream.close()
                 except Exception:  # noqa: BLE001
                     pass
+                self.ended_at = time.perf_counter()
+                self.playing = False
             stream, stream_gen = None, None
 
         while True:
@@ -449,12 +481,14 @@ class Speaker:
                 with self.lock:
                     if gen == self.gen:
                         self.active = False
+                        self.ending = False
                         self.done.set()
                 continue
             try:
                 if stream is None:
                     stream = sd.OutputStream(samplerate=rate, channels=1, dtype="float32")
                     stream.start()
+                    self.playing = True
                     stream_gen = gen
                     self.first_audio_s = time.perf_counter() - self.started_at
                 step = int(rate * 0.05)  # пишемо по 50 мс, щоб швидко реагувати на «замовкни»
@@ -507,14 +541,21 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json(404, {"ok": False, "error": "not found"})
 
-    def _listen_stream(self, wait_s):
+    def _listen_stream(self, wait_s, strict):
         if not LISTEN_LOCK.acquire(blocking=False):
             return self._json(409, {"ok": False, "error": "Я вже слухаю"})
         try:
             # слухати й говорити одночасно не можна: інакше асистент запише власний голос як команду
             if speaker.active:
                 speaker.cancel()
-                time.sleep(0.15)
+            for _ in range(40):  # чекаємо, доки звук справді обірветься
+                if not speaker.playing:
+                    break
+                time.sleep(0.025)
+            # ...і ще трохи, щоб у мікрофон не потрапив хвіст власного голосу
+            settle = SETTLE_AFTER_SPEECH_S - (time.perf_counter() - speaker.ended_at)
+            if 0 < settle <= SETTLE_AFTER_SPEECH_S:
+                time.sleep(settle)
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -531,7 +572,7 @@ class Handler(BaseHTTPRequestHandler):
                     except OSError:
                         CANCEL_LISTEN.set()  # клієнт від'єднався — запис більше нікому не потрібен
 
-            listen(emit, wait_s)
+            listen(emit, wait_s, strict)
         finally:
             STOP_LISTEN.clear()
             CANCEL_LISTEN.clear()
@@ -546,7 +587,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/listen":
                 wait_s = data.get("wait_s", WAIT_FOR_SPEECH_S)
                 wait_s = float(wait_s) if isinstance(wait_s, (int, float)) and not isinstance(wait_s, bool) else WAIT_FOR_SPEECH_S
-                self._listen_stream(min(15.0, max(2.0, wait_s)))
+                self._listen_stream(min(15.0, max(2.0, wait_s)), data.get("strict") is True)
             elif self.path == "/stop":
                 if LISTEN_LOCK.locked():  # поза записом прапорець не ставимо, щоб не зачепити наступний
                     STOP_LISTEN.set()

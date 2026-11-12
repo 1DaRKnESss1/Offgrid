@@ -158,13 +158,13 @@ export class Speech {
    * Слухає мікрофон до паузи. onEvent отримує { type: 'listening' | 'speech' | 'recognizing' | 'partial', text? }.
    * Повертає { text } (порожній, якщо нічого не сказано), { cancelled: true } або кидає помилку.
    */
-  async listen(onEvent = () => {}, { waitSeconds } = {}) {
+  async listen(onEvent = () => {}, { waitSeconds, strict = false } = {}) {
     if (!this.ready) throw new Error('Голос зараз недоступний');
     if (this.listening) throw new Error('Я вже слухаю');
     const abort = new AbortController();
     this.listening = abort;
     try {
-      const body = Number.isFinite(waitSeconds) ? { wait_s: waitSeconds } : {};
+      const body = { ...(Number.isFinite(waitSeconds) ? { wait_s: waitSeconds } : {}), ...(strict ? { strict: true } : {}) };
       const res = await this.#post('/listen', body, AbortSignal.any([abort.signal, AbortSignal.timeout(LISTEN_TIMEOUT_MS)]));
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Мовний сервіс: помилка ${res.status}`);
       const decoder = new TextDecoder();
