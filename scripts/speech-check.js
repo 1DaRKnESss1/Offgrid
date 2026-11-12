@@ -21,7 +21,7 @@ await speech.start(config.speech);
 let failed = !speech.ready;
 try {
   if (!speech.ready) throw new Error('сервіс не запустився');
-  console.log(`Сервіс готовий за ${((performance.now() - t0) / 1000).toFixed(1)} с`);
+  console.log(`Сервіс готовий за ${((performance.now() - t0) / 1000).toFixed(1)} с; розпізнавання — ${speech.device === 'gpu' ? 'на відеокарті' : 'на процесорі'}`);
 
   const noToken = await fetch(speech.base + '/health');
   const badToken = await fetch(speech.base + '/speak', { method: 'POST', headers: { 'X-Offgrid-Token': 'wrong' }, body: '{"text":"x"}' });

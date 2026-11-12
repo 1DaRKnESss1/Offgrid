@@ -24,7 +24,12 @@
   POST /say-done-> більше речень не буде; чекає, доки все прозвучить: {"ok":true,"interrupted":..,"audio_s":..}
   POST /speak   -> те саме, що /say і /say-done разом (один текст цілком)
 
-Швидкість. Точне розпізнавання починається ще під час короткої паузи в мовленні («наперед»): якщо людина
+Відеокарта. Якщо в speech\vendor лежать бібліотеки NVIDIA (cuBLAS, cuDNN) і відеокарта доступна, розпізнавання
+працює на ній: одна модель (OFFGRID_WHISPER_GPU_MODEL, типово large-v3-turbo) дає і текст наживо, і остаточний
+приблизно за 0,2 с замість 3 с, займаючи близько 1,2 ГБ відеопам'яті. OFFGRID_WHISPER_DEVICE=cpu це вимикає;
+якщо модель на відеокарті не завантажилась, сервіс сам переходить на процесор.
+
+Швидкість на процесорі. Точне розпізнавання починається ще під час короткої паузи в мовленні («наперед»): якщо людина
 після паузи не продовжила, результат готовий приблизно на секунду раніше. Для цього точна модель
 завантажується у двох примірниках (OFFGRID_WHISPER_AHEAD=0 це вимикає й заощаджує близько 1 ГБ пам'яті).
 """
@@ -70,6 +75,8 @@ PORT = int(os.environ.get("OFFGRID_SPEECH_PORT", "0"))  # 0 — система �
 TOKEN = os.environ.get("OFFGRID_SPEECH_TOKEN", "")
 WHISPER_MODEL = os.environ.get("OFFGRID_WHISPER_MODEL", "medium")          # остаточний текст
 WHISPER_LIVE_MODEL = os.environ.get("OFFGRID_WHISPER_LIVE_MODEL", "small")  # чернетка наживо; "" — вимкнути
+WHISPER_DEVICE = os.environ.get("OFFGRID_WHISPER_DEVICE", "auto").lower()         # auto | cpu | gpu
+WHISPER_GPU_MODEL = os.environ.get("OFFGRID_WHISPER_GPU_MODEL", "large-v3-turbo")
 WHISPER_DIR = os.environ.get("OFFGRID_WHISPER_DIR", r"E:\AI\whisper")
 PIPER_VOICE = Path(os.environ.get("OFFGRID_PIPER_VOICE", r"E:\AI\piper\uk_UA-mykyta-high.onnx"))
 SPEECH_SPEED = float(os.environ.get("OFFGRID_SPEECH_SPEED", "1.0"))  # >1 — повільніше, <1 — швидше
@@ -103,11 +110,51 @@ if not TOKEN:
     sys.exit("Не задано OFFGRID_SPEECH_TOKEN: сервіс запускається лише застосунком Offgrid")
 
 # ---------- Моделі (один раз при старті) ----------
-t0 = time.perf_counter()
 CPU_THREADS = max(4, (os.cpu_count() or 8) // 2)
-whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", cpu_threads=CPU_THREADS,
-                       download_root=WHISPER_DIR, local_files_only=True)
-log(f"Whisper '{WHISPER_MODEL}' завантажено за {time.perf_counter() - t0:.1f} с (потоків: {CPU_THREADS})")
+
+
+def load_gpu_whisper():
+    """Пробує завантажити Whisper на відеокарту. Повертає модель або None (тоді працюємо на процесорі)."""
+    if WHISPER_DEVICE == "cpu":
+        return None
+    # Бібліотеки NVIDIA лежать у папці проєкту, а не в системі. Без них навіть не пробуємо:
+    # спроба завантажити модель на відеокарту без cuBLAS/cuDNN не падає з помилкою, а зависає.
+    dirs = [Path(__file__).resolve().parent / "vendor" / "nvidia" / sub / "bin" for sub in ("cublas", "cudnn", "cuda_nvrtc")]
+    if not (dirs[0] / "cublas64_12.dll").is_file() or not (dirs[1] / "cudnn64_9.dll").is_file():
+        if WHISPER_DEVICE == "gpu":
+            log("Розпізнавання на відеокарті недоступне: у speech\\vendor немає бібліотек NVIDIA — працюю на процесорі")
+        return None
+    try:
+        for d in dirs:
+            if d.is_dir():
+                os.add_dll_directory(str(d))
+                os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+        import ctranslate2
+        if ctranslate2.get_cuda_device_count() < 1:
+            return None
+        t = time.perf_counter()
+        model = WhisperModel(WHISPER_GPU_MODEL, device="cuda", compute_type="int8_float16",
+                             download_root=WHISPER_DIR, local_files_only=True)
+        # прогрів: перший виклик на відеокарті помітно довший за наступні
+        list(model.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), language="uk", beam_size=1)[0])
+        log(f"Whisper '{WHISPER_GPU_MODEL}' завантажено на відеокарту за {time.perf_counter() - t:.1f} с")
+        return model
+    except Exception as e:  # noqa: BLE001 — будь-який збій відеокарти: тихо переходимо на процесор
+        log(f"Розпізнавання на відеокарті не запустилось ({str(e)[:200]}) — працюю на процесорі")
+        return None
+
+
+whisper = load_gpu_whisper()
+ON_GPU = whisper is not None
+if ON_GPU:
+    # на відеокарті одна модель встигає все: окрема чернетка й розпізнавання наперед не потрібні
+    WHISPER_MODEL, WHISPER_LIVE_MODEL, SPECULATE = WHISPER_GPU_MODEL, "", False
+    PARTIAL_EVERY_S = 0.4
+else:
+    t0 = time.perf_counter()
+    whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", cpu_threads=CPU_THREADS,
+                           download_root=WHISPER_DIR, local_files_only=True)
+    log(f"Whisper '{WHISPER_MODEL}' завантажено за {time.perf_counter() - t0:.1f} с (потоків: {CPU_THREADS})")
 whisper_live = None
 if WHISPER_LIVE_MODEL and WHISPER_LIVE_MODEL != WHISPER_MODEL:
     try:
@@ -301,7 +348,7 @@ def listen(emit, wait_s=WAIT_FOR_SPEECH_S, strict=False):
                         except Exception:  # noqa: BLE001 — потік не стартував: замок треба повернути
                             slot[1].release()
                 # проміжний текст: розпізнаємо все сказане досі, якщо попереднє розпізнавання вже закінчилось
-                if (whisper_live is not None and silence < SPECULATE_AFTER_S and total - last_partial >= PARTIAL_EVERY_S
+                if ((whisper_live is not None or ON_GPU) and silence < SPECULATE_AFTER_S and total - last_partial >= PARTIAL_EVERY_S
                         and total >= 0.6 and not partial_busy.is_set()):
                     last_partial = total
                     partial_busy.set()
@@ -536,7 +583,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         if self.path == "/health":
-            self._json(200, {"ok": True, "whisper": WHISPER_MODEL, "live": WHISPER_LIVE_MODEL if whisper_live else None,
+            self._json(200, {"ok": True, "device": "gpu" if ON_GPU else "cpu", "whisper": WHISPER_MODEL,
+                             "live": WHISPER_MODEL if ON_GPU else (WHISPER_LIVE_MODEL if whisper_live else None),
                              "ahead": len(FINAL_MODELS) > 1, "voice": PIPER_VOICE.stem, "mic_error": MIC_ERROR})
         else:
             self._json(404, {"ok": False, "error": "not found"})
@@ -641,5 +689,5 @@ if __name__ == "__main__":
     server = Server((HOST, PORT), Handler)
     threading.Thread(target=exit_with_parent, daemon=True).start()
     threading.Thread(target=calibrate, daemon=True).start()
-    log(f"READY http://{HOST}:{server.server_address[1]}")
+    log(f"READY http://{HOST}:{server.server_address[1]} stt={'gpu' if ON_GPU else 'cpu'}")
     server.serve_forever()

@@ -4,6 +4,12 @@ const REQUEST_TIMEOUT_MS = 180_000;
 export const NUM_CTX = 4096;
 const CANCELLED = 'Скасовано';
 
+// Скільки шарів моделі класти на відеокарту (див. gpu.js). null — вирішує сама Ollama.
+let gpuLayers = null;
+export function setGpuLayers(layers) {
+  gpuLayers = Number.isInteger(layers) && layers >= 0 ? layers : null;
+}
+
 /**
  * Один запит до моделі. onDelta(шматок тексту) викликається в міру надходження відповіді.
  * Повертає { content, tool_calls }.
@@ -57,7 +63,8 @@ async function chatOnce(config, messages, tools, signal, onDelta) {
         keep_alive: '30m',
         // рекомендовані розробниками моделі параметри для режиму без роздумів
         // num_ctx задаємо явно: більше вікно не вміщається у 8 ГБ відеопам'яті поруч із самою моделлю
-        options: { temperature: 0.7, top_p: 0.8, top_k: 20, presence_penalty: 1.5, num_ctx: NUM_CTX },
+        options: { temperature: 0.7, top_p: 0.8, top_k: 20, presence_penalty: 1.5, num_ctx: NUM_CTX,
+          ...(gpuLayers !== null ? { num_gpu: gpuLayers } : {}) },
       }),
     });
   } catch (e) {

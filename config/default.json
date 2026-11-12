@@ -4,6 +4,7 @@
   "hotkey": "Control+Shift+Space",
   "speakReplies": true,
   "followUp": true,
+  "gpuLayers": "auto",
 
   "speech": {
     "enabled": true,
@@ -11,6 +12,8 @@
     "whisperDir": "E:\\AI\\whisper",
     "whisperModel": "medium",
     "liveModel": "small",
+    "device": "auto",
+    "gpuModel": "large-v3-turbo",
     "piperVoice": "E:\\AI\\piper\\uk_UA-mykyta-high.onnx",
     "speed": 1.0
   },

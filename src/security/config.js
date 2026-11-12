@@ -22,7 +22,7 @@ export const OPENABLE = new Set(FILE_TYPE_GROUPS.flatMap((g) => g.types));
 // Читати вміст можна лише з простих текстових форматів
 export const READABLE = new Set(['.txt', '.md', '.csv', '.log', '.json', '.xml', '.ini', '.yml', '.yaml']);
 const CONFIRM_MODES = ['never', 'content', 'tainted', 'always'];
-const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'speakReplies', 'followUp', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'confirm']);
+const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'speakReplies', 'followUp', 'gpuLayers', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'confirm']);
 
 const WINDIR = process.env.SystemRoot ?? 'C:\\Windows';
 
@@ -106,7 +106,17 @@ function validateSpeech(raw, warn) {
     if (typeof raw.speed === 'number' && raw.speed >= 0.5 && raw.speed <= 2) speed = raw.speed;
     else warn('speech.speed: потрібне число від 0.5 до 2 — використано 1.0');
   }
-  return { enabled: true, python, whisperDir: dir, whisperModel: raw.whisperModel, liveModel, piperVoice: voice, speed };
+  let device = 'auto';
+  if (raw.device !== undefined) {
+    if (['auto', 'cpu', 'gpu'].includes(raw.device)) device = raw.device;
+    else warn('speech.device: дозволені значення auto, cpu, gpu — використано auto');
+  }
+  let gpuModel = 'large-v3-turbo';
+  if (raw.gpuModel !== undefined) {
+    if (typeof raw.gpuModel === 'string' && MODEL_NAME.test(raw.gpuModel)) gpuModel = raw.gpuModel;
+    else warn('speech.gpuModel: некоректна назва — використано large-v3-turbo');
+  }
+  return { enabled: true, python, whisperDir: dir, whisperModel: raw.whisperModel, liveModel, piperVoice: voice, speed, device, gpuModel };
 }
 
 /**
@@ -136,6 +146,12 @@ export function validateConfig(raw, defaults, toolModes = null) {
   // після відповіді голосом кілька секунд слухати продовження без клавіші
   cfg.followUp = typeof raw.followUp === 'boolean' ? raw.followUp : defaults.followUp === true;
   // голос — не білий список: якщо розділу в файлі користувача немає, беремо типовий
+  // скільки шарів моделі класти на відеокарту: "auto" — підібрати під вільну відеопам'ять, або число 0–99
+  cfg.gpuLayers = 'auto';
+  if (raw.gpuLayers !== undefined && raw.gpuLayers !== 'auto') {
+    if (Number.isInteger(raw.gpuLayers) && raw.gpuLayers >= 0 && raw.gpuLayers <= 99) cfg.gpuLayers = raw.gpuLayers;
+    else warn('gpuLayers: потрібне "auto" або ціле число від 0 до 99 — використано "auto"');
+  }
   cfg.speech = validateSpeech(raw.speech === undefined ? defaults.speech : raw.speech, warn);
 
   // Білі списки: якщо розділу немає або він не того типу — список ПОРОЖНІЙ, а не типовий

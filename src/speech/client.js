@@ -39,6 +39,7 @@ export class Speech {
     this.base = null;
     this.token = null;
     this.listening = null; // AbortController поточного запису
+    this.device = 'cpu';
     this.startId = 0;      // зростає з кожним start()/stop(): застарілий запуск бачить це й відступає
   }
 
@@ -87,6 +88,8 @@ export class Speech {
           OFFGRID_WHISPER_DIR: cfg.whisperDir,
           OFFGRID_WHISPER_MODEL: cfg.whisperModel,
           OFFGRID_WHISPER_LIVE_MODEL: cfg.liveModel ?? '',
+          OFFGRID_WHISPER_DEVICE: cfg.device ?? 'auto',
+          OFFGRID_WHISPER_GPU_MODEL: cfg.gpuModel ?? 'large-v3-turbo',
           OFFGRID_PIPER_VOICE: cfg.piperVoice,
           OFFGRID_SPEECH_SPEED: String(cfg.speed ?? 1),
         },
@@ -109,8 +112,8 @@ export class Speech {
       child.stdout.on('data', (d) => {
         if (out === null) return;
         out = (out + d).slice(-2000);
-        const m = out.match(/READY http:\/\/127\.0\.0\.1:(\d{2,5})\b/);
-        if (m) { out = null; done({ port: Number(m[1]) }); }
+        const m = out.match(/READY http:\/\/127\.0\.0\.1:(\d{2,5})(?: stt=(gpu|cpu))?[^\n]*\n/);
+        if (m) { out = null; done({ port: Number(m[1]), device: m[2] ?? 'cpu' }); }
       });
       child.stderr.on('data', (d) => { errTail = (errTail + d).slice(-800); });
       child.once('error', (e) => done({ error: `Не вдалося запустити Python: ${e.message}` }));
@@ -129,6 +132,7 @@ export class Speech {
       return;
     }
     this.base = `http://127.0.0.1:${result.port}`;
+    this.device = result.device; // 'gpu', якщо розпізнавання працює на відеокарті
     child.once('exit', () => {
       if (this.child !== child) return;
       this.child = null;

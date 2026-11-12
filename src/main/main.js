@@ -10,7 +10,8 @@ import { TOOL_MODES } from '../security/policy.js';
 import { logAction, readLog } from '../security/log.js';
 import { editSettings, settingsView, isValidHotkey } from '../security/settings-store.js';
 import { Agent } from '../agent/agent.js';
-import { ping } from '../agent/ollama.js';
+import { ping, setGpuLayers } from '../agent/ollama.js';
+import { decideGpuLayers } from '../agent/gpu.js';
 import { nodeOs } from '../tools/util.js';
 import { Speech } from '../speech/client.js';
 import { SentenceSplitter } from '../speech/sentences.js';
@@ -54,6 +55,7 @@ let hotkeySuspended = false; // гарячу клавішу тимчасово �
 let dialogOpen = false; // відкрито системне вікно вибору файлу: панель у цей час не ховаємо
 let turnCancelled = false;
 let listenNext = false;   // після цього ходу одразу слухати (відповідь перебито гарячою клавішею)
+let gpuPlan = null;       // обіцянка поточного підбору розподілу відеопам'яті (або null)
 let replySink = null;     // куди йде текст відповіді, поки модель його пише
 let turnSpoke = false;    // у цьому ході вже щось пішло на озвучення
 let listeningAuto = false; // зараз іде автоматичне «продовження», а не запис за клавішею
@@ -208,6 +210,7 @@ function applyConfig({ announce = false } = {}) {
   // у режимі знімка для розробки моделі мовлення не вантажимо, якщо не просили справжній запит
   const skipSpeech = SHOT && !process.env.OFFGRID_SHOT_ASK;
   if (speech && !skipSpeech && (key !== speechConfigKey || (announce && speech.status === 'failed'))) { speechConfigKey = key; speech.start(config.speech); }
+  else if (announce) planGpu(); // інші програми могли звільнити чи зайняти відеопам'ять
   rebuildTrayMenu();
 
   // при старті панель сама забирає це через offgrid:ready
@@ -283,6 +286,26 @@ function setSpeakReplies(value) {
   rebuildTrayMenu();
 }
 
+// Підбирає, скільки шарів моделі асистента вмістити у відеопам'ять поруч з усім іншим (див. agent/gpu.js).
+// Викликається, коли мовний сервіс запустився чи зупинився, і після «Перечитати налаштування».
+function planGpu() {
+  if (gpuPlan || turnActive || quitting || (SHOT && !process.env.OFFGRID_SHOT_ASK)) return gpuPlan;
+  gpuPlan = (async () => {
+    try {
+      // поки мовний сервіс ще вантажиться й може зайняти відеокарту — лишаємо під нього місце
+      const pending = speech?.status === 'starting' && config.speech?.enabled && config.speech.device !== 'cpu';
+      const plan = await decideGpuLayers(config, { reserveMb: pending ? 1300 : 0 });
+      setGpuLayers(plan.layers);
+      logAction({ tool: 'app', args: {}, decision: 'auto', ok: true,
+        message: `Відеопам'ять: ${plan.note}; розпізнавання мови — ${speech?.ready ? (speech.device === 'gpu' ? 'на відеокарті' : 'на процесорі') : 'вимкнене'}` });
+      if (plan.layers !== null && plan.layers < 99 && config.gpuLayers === 'auto') {
+        send({ type: 'soft', text: `Відеопам'ять зайнята іншими програмами: ${plan.note}.` });
+      }
+    } catch { /* розподіл лишається за Ollama */ } finally { gpuPlan = null; }
+  })();
+  return gpuPlan;
+}
+
 // Один хід розмови: запит до моделі, відповідь у панель і (якщо ввімкнено) голосом.
 // Текст відповіді надходить потоком: панель показує його одразу, а кожне завершене речення йде на озвучення,
 // тож асистент починає говорити з першого речення. Повертає true, якщо після ходу треба одразу слухати далі.
@@ -340,6 +363,7 @@ async function runTurn(text, { voice = false } = {}) {
   };
 
   try {
+    if (gpuPlan) await gpuPlan; // розподіл відеопам'яті саме підбирається — секунду чекаємо
     const reply = await agent.ask(text);
     replySink = null;
     if (!current()) return false;
@@ -625,7 +649,13 @@ app.whenReady().then(() => {
     },
   });
 
-  speech = new Speech({ onStatus: (s) => { send({ type: 'voice', status: s.status, error: s.error }); } });
+  speech = new Speech({
+    onStatus: (s) => {
+      send({ type: 'voice', status: s.status, error: s.error });
+      // мовний сервіс визначився (зайняв відеокарту чи ні) — тепер можна ділити відеопам'ять для моделі
+      if (s.status !== 'starting') planGpu();
+    },
+  });
 
   registerIpc();
   createWindow();
