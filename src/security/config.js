@@ -22,7 +22,7 @@ export const OPENABLE = new Set(FILE_TYPE_GROUPS.flatMap((g) => g.types));
 // Читати вміст можна лише з простих текстових форматів
 export const READABLE = new Set(['.txt', '.md', '.csv', '.log', '.json', '.xml', '.ini', '.yml', '.yaml']);
 const CONFIRM_MODES = ['never', 'content', 'tainted', 'always'];
-const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'speakReplies', 'followUp', 'gpuLayers', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'confirm']);
+const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'speakReplies', 'followUp', 'gpuLayers', 'idleUnloadMinutes', 'yieldToOtherApps', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'confirm']);
 
 const WINDIR = process.env.SystemRoot ?? 'C:\\Windows';
 
@@ -152,6 +152,14 @@ export function validateConfig(raw, defaults, toolModes = null) {
     if (Number.isInteger(raw.gpuLayers) && raw.gpuLayers >= 0 && raw.gpuLayers <= 99) cfg.gpuLayers = raw.gpuLayers;
     else warn('gpuLayers: потрібне "auto" або ціле число від 0 до 99 — використано "auto"');
   }
+  // через скільки хвилин без команд звільняти пам'ять (0 — ніколи)
+  cfg.idleUnloadMinutes = defaults.idleUnloadMinutes ?? 5;
+  if (raw.idleUnloadMinutes !== undefined) {
+    if (Number.isInteger(raw.idleUnloadMinutes) && raw.idleUnloadMinutes >= 0 && raw.idleUnloadMinutes <= 240) cfg.idleUnloadMinutes = raw.idleUnloadMinutes;
+    else warn('idleUnloadMinutes: потрібне ціле число хвилин від 0 до 240 (0 — не звільняти)');
+  }
+  // звільняти відеопам'ять, коли її бракує іншій програмі (наприклад, запущено гру)
+  cfg.yieldToOtherApps = typeof raw.yieldToOtherApps === 'boolean' ? raw.yieldToOtherApps : defaults.yieldToOtherApps !== false;
   cfg.speech = validateSpeech(raw.speech === undefined ? defaults.speech : raw.speech, warn);
 
   // Білі списки: якщо розділу немає або він не того типу — список ПОРОЖНІЙ, а не типовий
@@ -220,7 +228,9 @@ export function validateConfig(raw, defaults, toolModes = null) {
 
 /** Змінює один простий параметр у settings.json, не чіпаючи решти (для вимикача озвучення в панелі). */
 export function saveSetting(key, value) {
-  if (!['speakReplies', 'followUp'].includes(key) || typeof value !== 'boolean') return false;
+  const ok = (['speakReplies', 'followUp', 'yieldToOtherApps'].includes(key) && typeof value === 'boolean')
+    || (key === 'idleUnloadMinutes' && Number.isInteger(value) && value >= 0 && value <= 240);
+  if (!ok) return false;
   try {
     const raw = readJson(SETTINGS_FILE);
     if (!isObject(raw)) return false;

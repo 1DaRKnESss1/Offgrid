@@ -125,6 +125,32 @@ async function chatOnce(config, messages, tools, signal, onDelta) {
   return { content, tool_calls: toolCalls };
 }
 
+/** Вивантажує модель із пам'яті (звільняє відеопам'ять). */
+export async function unloadModel(config) {
+  try {
+    const res = await fetch(`${config.ollamaUrl}/api/generate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000),
+      body: JSON.stringify({ model: config.model, keep_alive: 0 }),
+    });
+    return res.ok;
+  } catch { return false; }
+}
+
+/**
+ * Завантажує модель заздалегідь — з тими самими параметрами, що й справжні запити (інакше Ollama
+ * перезавантажила б її ще раз). Так перша відповідь після «сну» не чекає на завантаження.
+ */
+export async function preloadModel(config) {
+  try {
+    const res = await fetch(`${config.ollamaUrl}/api/generate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(120_000),
+      body: JSON.stringify({ model: config.model, keep_alive: '30m',
+        options: { num_ctx: NUM_CTX, ...(gpuLayers !== null ? { num_gpu: gpuLayers } : {}) } }),
+    });
+    return res.ok;
+  } catch { return false; }
+}
+
 export async function ping(config) {
   try {
     // запас у 4 с: під час запуску застосунку процесор зайнятий завантаженням моделей мовлення

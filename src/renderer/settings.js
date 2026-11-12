@@ -160,6 +160,19 @@
         h('input', { type: 'checkbox', checked: view.flags.followUp, onchange: (e) => request('setFlag', { key: 'followUp', on: e.target.checked }) }),
         h('span', { text: 'Після відповіді слухати продовження без клавіші' })) : null,
       view.voice ? h('p', { class: 'help', text: 'Асистент слухає ще 5 секунд після своєї відповіді. Якщо ти мовчиш — розмова закінчується. Працює лише в розмові голосом і коли відповіді озвучуються.' }) : null,
+      h('div', { class: 'group-title', text: 'Ресурси комп\'ютера' }),
+      h('label', { class: 'check' },
+        h('span', { text: 'Звільняти пам\'ять після простою:' }),
+        h('select', { 'aria-label': 'Через скільки хвилин простою звільняти пам\'ять', disabled: !view.editable,
+          onchange: (e) => request('setIdleMinutes', { minutes: Number(e.target.value) }) },
+          ...[[1, '1 хв'], [2, '2 хв'], [5, '5 хв'], [10, '10 хв'], [30, '30 хв'], [0, 'ніколи']]
+            .concat([1, 2, 5, 10, 30, 0].includes(view.idleUnloadMinutes) ? [] : [[view.idleUnloadMinutes, `${view.idleUnloadMinutes} хв`]])
+            .map(([value, label]) => h('option', { value, selected: value === view.idleUnloadMinutes }, label)))),
+      h('label', { class: 'check' },
+        h('input', { type: 'checkbox', checked: view.flags.yieldToOtherApps, disabled: !view.editable,
+          onchange: (e) => request('setFlag', { key: 'yieldToOtherApps', on: e.target.checked }) }),
+        h('span', { text: 'Поступатися відеопам\'яттю іншим програмам (іграм)' })),
+      h('p', { class: 'help', text: 'Коли асистент «спить», модель і розпізнавання не займають відеокарту. Прокидається сам із першою командою: перша відповідь тоді довша на кілька секунд. Заснути одразу можна з меню іконки в треї.' }),
       h('div', { class: 'group-title', text: 'Файл налаштувань' }),
       h('p', { class: 'help', text: 'Усе з цього екрана зберігається в data/settings.json. Модель, голос і посилене підтвердження для окремих дій поки змінюються лише там: меню іконки в треї → «Відкрити налаштування».' }),
     ];

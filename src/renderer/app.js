@@ -26,13 +26,14 @@ let speakReplies = true;
 let allowTimer = null;
 let ollamaNote = null; // попередження «Ollama не відповідає», поки воно на екрані
 let ollamaTimer = null;
+let asleep = false;  // пам'ять звільнено; прокинеться з першою командою
 let replyEl = null; // відповідь, яку модель пише просто зараз
 let liveEl = null; // бульбашка з текстом, який розпізнається просто зараз
 
 function setState(next) {
   state = next;
   document.body.dataset.state = next;
-  $('state-label').textContent = STATE_LABELS[next] ?? next;
+  $('state-label').textContent = asleep && next === 'idle' ? 'Спить' : (STATE_LABELS[next] ?? next);
   renderControls();
 }
 
@@ -190,6 +191,7 @@ window.offgrid.onEvent((event) => {
     case 'reset': replyEl = null; hideConfirm(); showEmpty(); setBusy(false); ollamaNote = null; checkOllama(); break;
     case 'focus-input': if ((window.offgridView?.current ?? 'chat') === 'chat') input.focus(); break;
     case 'capture-end': window.offgridView?.captureEnded(); break;
+    case 'asleep': asleep = event.value === true; setState(state); break;
     case 'open-view': window.offgridView?.show(event.view, { tab: event.tab }); break;
     case 'demo': // лише для знімка під час розробки
       add('user', 'закрий блокнот');
@@ -234,6 +236,7 @@ setHint();
 renderControls();
 window.offgrid.ready().then((info) => {
   if (!info) return;
+  asleep = info.asleep === true;
   setState(info.state);
   setBusy(!!info.busy);
   applyVoice(info.voice);

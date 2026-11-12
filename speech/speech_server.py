@@ -23,6 +23,8 @@
   POST /say     -> тіло {"text": "речення"}; додає речення до озвучення й одразу повертається
   POST /say-done-> більше речень не буде; чекає, доки все прозвучить: {"ok":true,"interrupted":..,"audio_s":..}
   POST /speak   -> те саме, що /say і /say-done разом (один текст цілком)
+  POST /sleep   -> звільнити відеопам'ять: модель розпізнавання вивантажується з відеокарти.
+                   Повертається сама, щойно почнеться наступний запис (близько 2 с, у фоні)
 
 Відеокарта. Якщо в speech\vendor лежать бібліотеки NVIDIA (cuBLAS, cuDNN) і відеокарта доступна, розпізнавання
 працює на ній: одна модель (OFFGRID_WHISPER_GPU_MODEL, типово large-v3-turbo) дає і текст наживо, і остаточний
@@ -216,7 +218,39 @@ def calibrate():
         log(MIC_ERROR)
 
 
+GPU_LOADED = ON_GPU  # чи модель розпізнавання зараз у відеопам'яті (після /sleep — ні)
+
+
+def gpu_sleep():
+    """Вивантажує модель розпізнавання з відеокарти. Повертає True, якщо відеопам'ять справді звільнено."""
+    global GPU_LOADED
+    if not ON_GPU:
+        return False
+    with FINAL_MODELS[0][1]:
+        if not GPU_LOADED:
+            return False
+        whisper.model.unload_model()
+        GPU_LOADED = False
+        return True
+
+
+def gpu_wake():
+    """Повертає модель на відеокарту заздалегідь (у фоні, поки людина ще говорить)."""
+    if ON_GPU and not GPU_LOADED:
+        with FINAL_MODELS[0][1]:
+            _ensure_loaded(whisper)
+
+
+def _ensure_loaded(model):
+    """Викликається з уже захопленим замком моделі."""
+    global GPU_LOADED
+    if ON_GPU and model is whisper and not GPU_LOADED:
+        model.model.load_model()
+        GPU_LOADED = True
+
+
 def _run(model, audio, quick):
+    _ensure_loaded(model)
     segments, _ = model.transcribe(
         audio, language="uk", beam_size=1, vad_filter=not quick, condition_on_previous_text=False,
         initial_prompt=INITIAL_PROMPT, without_timestamps=True,
@@ -303,6 +337,9 @@ def listen(emit, wait_s=WAIT_FOR_SPEECH_S, strict=False):
         finally:
             partial_busy.clear()
 
+    # якщо відеопам'ять була звільнена — повертаємо модель у фоні, не затримуючи початок запису
+    if ON_GPU and not GPU_LOADED:
+        threading.Thread(target=gpu_wake, daemon=True).start()
     t_start = time.perf_counter()
     try:
         with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", blocksize=BLOCK) as stream:
@@ -583,7 +620,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         if self.path == "/health":
-            self._json(200, {"ok": True, "device": "gpu" if ON_GPU else "cpu", "whisper": WHISPER_MODEL,
+            self._json(200, {"ok": True, "device": "gpu" if ON_GPU else "cpu", "gpu_loaded": GPU_LOADED, "whisper": WHISPER_MODEL,
                              "live": WHISPER_MODEL if ON_GPU else (WHISPER_LIVE_MODEL if whisper_live else None),
                              "ahead": len(FINAL_MODELS) > 1, "voice": PIPER_VOICE.stem, "mic_error": MIC_ERROR})
         else:
@@ -636,6 +673,10 @@ class Handler(BaseHTTPRequestHandler):
                 wait_s = data.get("wait_s", WAIT_FOR_SPEECH_S)
                 wait_s = float(wait_s) if isinstance(wait_s, (int, float)) and not isinstance(wait_s, bool) else WAIT_FOR_SPEECH_S
                 self._listen_stream(min(15.0, max(2.0, wait_s)), data.get("strict") is True)
+            elif self.path == "/sleep":
+                if LISTEN_LOCK.locked():
+                    return self._json(409, {"ok": False, "error": "Я зараз слухаю"})
+                self._json(200, {"ok": True, "freed": gpu_sleep()})
             elif self.path == "/stop":
                 if LISTEN_LOCK.locked():  # поза записом прапорець не ставимо, щоб не зачепити наступний
                     STOP_LISTEN.set()

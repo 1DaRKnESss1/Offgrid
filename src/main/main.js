@@ -10,8 +10,9 @@ import { TOOL_MODES } from '../security/policy.js';
 import { logAction, readLog } from '../security/log.js';
 import { editSettings, settingsView, isValidHotkey } from '../security/settings-store.js';
 import { Agent } from '../agent/agent.js';
-import { ping, setGpuLayers } from '../agent/ollama.js';
-import { decideGpuLayers } from '../agent/gpu.js';
+import { ping, setGpuLayers, unloadModel, preloadModel } from '../agent/ollama.js';
+import { decideGpuLayers, readVram } from '../agent/gpu.js';
+import { Resources } from '../agent/resources.js';
 import { nodeOs } from '../tools/util.js';
 import { Speech } from '../speech/client.js';
 import { SentenceSplitter } from '../speech/sentences.js';
@@ -55,6 +56,8 @@ let hotkeySuspended = false; // гарячу клавішу тимчасово �
 let dialogOpen = false; // відкрито системне вікно вибору файлу: панель у цей час не ховаємо
 let turnCancelled = false;
 let listenNext = false;   // після цього ходу одразу слухати (відповідь перебито гарячою клавішею)
+let resources = null;     // «сон»: звільнення пам'яті, коли асистентом не користуються
+let waking = null;        // обіцянка поточного пробудження
 let gpuPlan = null;       // обіцянка поточного підбору розподілу відеопам'яті (або null)
 let replySink = null;     // куди йде текст відповіді, поки модель його пише
 let turnSpoke = false;    // у цьому ході вже щось пішло на озвучення
@@ -69,6 +72,10 @@ const STATE_LABELS = {
   confirming: 'Чекає дозволу', speaking: 'Говорить', error: 'Помилка',
 };
 
+const trayTip = () => (resources?.asleep && state === 'idle'
+  ? 'Offgrid — спить, пам\'ять звільнено'
+  : `Offgrid — ${STATE_LABELS[state].toLowerCase()}`);
+
 // ---------- Події для панелі ----------
 function send(event) {
   if (win && !win.isDestroyed()) win.webContents.send('offgrid:event', event);
@@ -80,7 +87,7 @@ function setState(next) {
   send({ type: 'state', state });
   if (tray) {
     tray.setImage(nativeImage.createFromBuffer(iconPng(state), { scaleFactor: 2 }));
-    tray.setToolTip(`Offgrid — ${STATE_LABELS[state].toLowerCase()}`);
+    tray.setToolTip(trayTip());
   }
 }
 
@@ -211,6 +218,7 @@ function applyConfig({ announce = false } = {}) {
   const skipSpeech = SHOT && !process.env.OFFGRID_SHOT_ASK;
   if (speech && !skipSpeech && (key !== speechConfigKey || (announce && speech.status === 'failed'))) { speechConfigKey = key; speech.start(config.speech); }
   else if (announce) planGpu(); // інші програми могли звільнити чи зайняти відеопам'ять
+  resources?.touch();
   rebuildTrayMenu();
 
   // при старті панель сама забирає це через offgrid:ready
@@ -233,6 +241,9 @@ function rebuildTrayMenu() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Показати панель', click: () => showPanel() },
     { label: 'Нова розмова', click: () => newChat() },
+    resources?.asleep
+      ? { label: 'Спить — пам\'ять звільнено', enabled: false }
+      : { label: 'Звільнити відеопам\'ять (заснути)', click: () => { resources?.sleep('manual'); } },
     { label: 'Озвучувати відповіді', type: 'checkbox', checked: !!config?.speakReplies, enabled: !!config?.speech?.enabled, click: (item) => setSpeakReplies(item.checked) },
     { type: 'separator' },
     { label: 'Налаштування…', click: () => { showPanel(); send({ type: 'open-view', view: 'settings' }); } },
@@ -271,6 +282,7 @@ function showError(text) {
 
 function endTurn() {
   turnActive = false;
+  resources?.touch(); // відлік простою починається після кожної розмови
   if (quitting || !win || win.isDestroyed()) return; // застосунок уже закривається
   send({ type: 'busy', value: false });
   if (state !== 'error') setState('idle');
@@ -288,12 +300,14 @@ function setSpeakReplies(value) {
 
 // Підбирає, скільки шарів моделі асистента вмістити у відеопам'ять поруч з усім іншим (див. agent/gpu.js).
 // Викликається, коли мовний сервіс запустився чи зупинився, і після «Перечитати налаштування».
-function planGpu() {
-  if (gpuPlan || turnActive || quitting || (SHOT && !process.env.OFFGRID_SHOT_ASK)) return gpuPlan;
+function planGpu({ force = false, reserveSpeech = false } = {}) {
+  if (gpuPlan) return gpuPlan;
+  if ((turnActive && !force) || quitting || resources?.asleep || (SHOT && !process.env.OFFGRID_SHOT_ASK)) return null;
   gpuPlan = (async () => {
     try {
       // поки мовний сервіс ще вантажиться й може зайняти відеокарту — лишаємо під нього місце
-      const pending = speech?.status === 'starting' && config.speech?.enabled && config.speech.device !== 'cpu';
+      // (або щойно прокинувся й ще не повернув свою модель на відеокарту)
+      const pending = reserveSpeech || (speech?.status === 'starting' && config.speech?.enabled && config.speech.device !== 'cpu');
       const plan = await decideGpuLayers(config, { reserveMb: pending ? 1300 : 0 });
       setGpuLayers(plan.layers);
       logAction({ tool: 'app', args: {}, decision: 'auto', ok: true,
@@ -304,6 +318,31 @@ function planGpu() {
     } catch { /* розподіл лишається за Ollama */ } finally { gpuPlan = null; }
   })();
   return gpuPlan;
+}
+
+// Прокидається перед командою: заново ділить відеопам'ять і завантажує модель, не чекаючи першого запиту.
+function wakeUp() {
+  if (waking) return waking;
+  waking = (async () => {
+    try {
+      if (!(await resources?.wake())) return;
+      await planGpu({ force: true, reserveSpeech: speech?.ready && speech.device === 'gpu' });
+      preloadModel(config); // у фоні: поки ти говориш, модель уже вантажиться
+    } finally { waking = null; }
+  })();
+  return waking;
+}
+
+function onSleepChange(asleep, why) {
+  if (quitting) return;
+  if (tray) tray.setToolTip(trayTip());
+  rebuildTrayMenu();
+  send({ type: 'asleep', value: asleep });
+  if (!asleep) return;
+  const reasons = { idle: 'простій', manual: 'на прохання користувача', pressure: 'відеопам\'яті бракує іншій програмі' };
+  logAction({ tool: 'app', args: {}, decision: 'auto', ok: true, message: `Пам'ять звільнено (${reasons[why] ?? why}). Прокинуся з першою командою` });
+  if (why === 'manual') send({ type: 'soft', text: 'Відеопам\'ять звільнено. Прокинуся з першою ж командою.' });
+  if (why === 'pressure') send({ type: 'soft', text: 'Іншій програмі бракувало відеопам\'яті — я звільнив свою. Прокинуся з першою ж командою.' });
 }
 
 // Один хід розмови: запит до моделі, відповідь у панель і (якщо ввімкнено) голосом.
@@ -363,6 +402,7 @@ async function runTurn(text, { voice = false } = {}) {
   };
 
   try {
+    if (waking) await waking;   // асистент прокидається після «сну»
     if (gpuPlan) await gpuPlan; // розподіл відеопам'яті саме підбирається — секунду чекаємо
     const reply = await agent.ask(text);
     replySink = null;
@@ -403,6 +443,7 @@ async function startTextTurn(text) {
   turnCancelled = false;
   listenNext = false;
   send({ type: 'busy', value: true });
+  wakeUp();
   let again = false;
   try { again = await runTurn(text); } finally { endTurn(); }
   if (again && listenNext) startListening();
@@ -420,6 +461,7 @@ async function startListening() {
   turnActive = true;
   turnCancelled = false;
   send({ type: 'busy', value: true });
+  wakeUp(); // якщо спав — прокидається у фоні, поки ти говориш
   let autoListens = 0; // скільки разів поспіль слухали без клавіші
   try {
     for (let followUp = false; ; followUp = true) {
@@ -467,6 +509,14 @@ async function startListening() {
     listeningAuto = false;
     endTurn();
   }
+}
+
+function setOption(key, value) {
+  if (!saveSetting(key, value)) return { ok: false, error: 'Не вдалося зберегти налаштування.' };
+  config[key] = value;
+  logAction({ tool: 'settings', args: { change: key, value: String(value) }, decision: 'user', ok: true });
+  resources?.touch();
+  return { ok: true };
 }
 
 function setFollowUp(value) {
@@ -534,7 +584,11 @@ async function handleSettings(action, payload) {
     const on = data.on === true;
     if (data.key === 'speakReplies') setSpeakReplies(on);
     else if (data.key === 'followUp') { if (!setFollowUp(on)) result = { ok: false, error: 'Не вдалося зберегти — налаштування діятиме до перезапуску.' }; }
+    else if (data.key === 'yieldToOtherApps') result = setOption('yieldToOtherApps', on);
     else result = { ok: false, error: 'Невідомий перемикач' };
+  } else if (action === 'setIdleMinutes') {
+    result = Number.isInteger(data.minutes) && data.minutes >= 0 && data.minutes <= 240
+      ? setOption('idleUnloadMinutes', data.minutes) : { ok: false, error: 'Некоректний час простою' };
   } else if (action === 'setHotkey') {
     result = changeHotkey(data.hotkey);
   } else if (SIMPLE_CHANGES.has(action)) {
@@ -552,7 +606,7 @@ function registerIpc() {
   ipcMain.handle('offgrid:ready', async (e) => {
     if (!trusted(e)) return null;
     return {
-      state, busy: turnActive, hotkey: activeHotkey, model: config.model, warnings, speakReplies: config.speakReplies,
+      state, busy: turnActive, asleep: !!resources?.asleep, hotkey: activeHotkey, model: config.model, warnings, speakReplies: config.speakReplies,
       voice: { status: speech?.status ?? 'off', error: speech?.error ?? null },
     };
   });
@@ -615,7 +669,7 @@ async function devScreenshot() {
 // ---------- Запуск ----------
 app.on('second-instance', () => showPanel());
 app.on('window-all-closed', () => { /* застосунок живе в треї */ });
-app.on('will-quit', () => { globalShortcut.unregisterAll(); speech?.stop(); });
+app.on('will-quit', () => { globalShortcut.unregisterAll(); resources?.stop(); speech?.stop(); });
 // Жодне вікно застосунку не має права щось відкривати чи кудись переходити
 app.on('web-contents-created', (_e, contents) => {
   contents.on('will-attach-webview', (e) => e.preventDefault());
@@ -657,10 +711,19 @@ app.whenReady().then(() => {
     },
   });
 
+  resources = new Resources({
+    getConfig: () => config,
+    isBusy: () => turnActive || !!gpuPlan || !!waking || dialogOpen || quitting,
+    release: async () => { await unloadModel(config); await speech?.sleep().catch(() => false); },
+    readVram,
+    onChange: onSleepChange,
+  });
+
   registerIpc();
   createWindow();
   createTray();
   applyConfig(); // тут же запускається мовний сервіс, якщо голос увімкнено
+  if (!SHOT) resources.start();
   if (!SHOT) logAction({ tool: 'app', args: {}, decision: 'auto', ok: true, message: 'Offgrid запущено' });
 
   win.webContents.once('did-finish-load', () => {

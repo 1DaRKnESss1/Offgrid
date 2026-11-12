@@ -204,6 +204,14 @@ export class Speech {
     if (this.listening && this.ready) this.#post('/stop').catch(() => {});
   }
 
+  /** Звільнити відеопам'ять: розпізнавання вивантажується з відеокарти й повернеться саме з наступним записом. */
+  async sleep() {
+    if (!this.ready || this.device !== 'gpu') return false;
+    const res = await this.#post('/sleep', {}, AbortSignal.timeout(15_000));
+    const data = await res.json().catch(() => ({}));
+    return !!data.freed;
+  }
+
   /** Скасувати запис і замовкнути. Запис скасовується одразу, не чекаючи відповіді сервісу. */
   cancel() {
     this.listening?.abort();

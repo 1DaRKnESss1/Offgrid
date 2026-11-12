@@ -5,6 +5,8 @@
   "speakReplies": true,
   "followUp": true,
   "gpuLayers": "auto",
+  "idleUnloadMinutes": 5,
+  "yieldToOtherApps": true,
 
   "speech": {
     "enabled": true,
