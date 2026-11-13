@@ -24,6 +24,7 @@
     answerConfirm: (id, allow) => fire('confirm', { id: String(id), allow: allow === true }),
     newChat: () => fire('new-chat'),
     hide: () => fire('hide'),
+    show: () => fire('show'),
     ready: () => post('ready'),
     settings: (action, payload) => post('settings', { action: String(action), payload }),
     log: () => post('log'),

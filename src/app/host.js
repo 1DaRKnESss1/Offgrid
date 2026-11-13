@@ -41,7 +41,7 @@ export function shellInstalled() {
 }
 
 /**
- * Події: 'hotkey', 'tray-click', 'menu' (id), 'blur', 'focus', 'shown', 'hidden', 'exit' (code).
+ * Події: 'hotkey', 'tray-click', 'menu' (id), 'blur', 'focus', 'shown', 'hidden', 'moved' ({x, y}), 'exit' (code).
  */
 export class Host extends EventEmitter {
   constructor() {
@@ -54,7 +54,7 @@ export class Host extends EventEmitter {
   }
 
   /** Запускає оболонку й чекає, доки панель завантажить сторінку. */
-  start({ url, dataDir, width, height }) {
+  start({ url, dataDir, width, height, spot = null }) {
     return new Promise((resolve, reject) => {
       if (!shellInstalled()) return reject(new Error('Немає бібліотек WebView2. Виконай: powershell -ExecutionPolicy Bypass -File scripts\\setup-webview2.ps1'));
       fs.mkdirSync(dataDir, { recursive: true });
@@ -66,6 +66,7 @@ export class Host extends EventEmitter {
       this.child = child;
       // якщо оболонка зникла, запис у її stdin дав би необроблену помилку й звалив би застосунок замість чистого виходу
       child.stdin.on('error', () => {});
+      this.place(spot); // ще до показу: острівець з'являється одразу на своєму місці
       this.#send({ c: 'navigate', url });
       let started = false;
       let errTail = '';
@@ -122,6 +123,7 @@ export class Host extends EventEmitter {
       case 'hotkey': this.emit('hotkey'); break;
       case 'tray-click': this.emit('tray-click'); break;
       case 'menu': this.emit('menu', String(msg.id)); break;
+      case 'moved': if (Number.isInteger(msg.x) && Number.isInteger(msg.y)) this.emit('moved', { x: msg.x, y: msg.y }); break;
       default: break; // 'error' та інше — оболонка сама продовжує працювати
     }
   }
@@ -148,8 +150,11 @@ export class Host extends EventEmitter {
     try { child.kill(); } catch { /* вже завершився */ }
   }
 
+  /** Острівець і так завжди на екрані; focus: true віддає йому клавіатуру (панель розкрито, користувач друкуватиме). */
   show({ focus = true } = {}) { this.#send({ c: 'show', focus }); }
-  hide() { this.#send({ c: 'hide' }); }
+
+  /** Поставити вікно на збережене місце ({ x, y }) або, якщо місця немає чи воно поза екранами, — угорі по центру. */
+  place(spot) { this.#send({ c: 'place', x: spot?.x ?? null, y: spot?.y ?? null }); }
 
   /** Іконка (PNG) і підказка в треї. */
   setTray({ icon, tip }) { this.#send({ c: 'tray', icon: icon ? icon.toString('base64') : undefined, tip }); }

@@ -115,7 +115,7 @@ function setHint() {
     parts.push(voice === 'ready' ? `${keys} — говорити або перебити` : `${keys} — показати або сховати`);
   }
   if (wake?.armed) parts.unshift(`скажи «${wake.name}»`);
-  parts.push('Esc — сховати');
+  parts.push('Esc — згорнути');
   $('hint').textContent = parts.join(' · ');
 }
 
@@ -161,6 +161,8 @@ function applyVoice(event) {
 }
 
 window.offgrid.onEvent((event) => {
+  // ті самі події отримує острівець (island.js)
+  window.dispatchEvent(new CustomEvent('offgrid-event', { detail: event }));
   switch (event.type) {
     case 'state': setState(event.state); break;
     case 'busy': if (!event.value) replyEl = null; setBusy(event.value); if (event.value && window.offgridView?.current !== 'chat') window.offgridView.show('chat'); break;

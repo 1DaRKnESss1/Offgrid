@@ -3,18 +3,21 @@
 # trusts: PowerShell + .NET WinForms + the WebView2 runtime that ships with Windows 11.
 #
 # It has no logic of its own. The Node process (src/app/main.js) starts it and drives it:
-#   Node -> shell : one JSON object per line on stdin   (navigate, show, hide, tray, menu, hotkey, pick, open, shot, quit)
+#   Node -> shell : one JSON object per line on stdin   (navigate, show, place, tray, menu, hotkey, pick, open, shot, quit)
 # The panel address (with its one-time key) arrives through stdin, never on the command line, so that other
 # programs cannot read it from the process list.
-#   shell -> Node : one JSON object per line on stdout  (ready, hotkey, tray-click, menu, blur, focus, picked, ...)
+#   shell -> Node : one JSON object per line on stdout  (ready, hotkey, tray-click, menu, blur, focus, moved, ...)
+#
+# The window is the "island": a transparent, always-on-top window in which only the shape drawn by the page is
+# visible. The page tells the shell which box that shape occupies; the rest of the window is cut away, so
+# clicks beside the island reach whatever lies underneath.
 # When stdin closes (the Node process is gone) the shell exits by itself.
 #
 # This file is ASCII-only on purpose: all user-visible text arrives from Node as UTF-8 JSON.
 param(
   [Parameter(Mandatory)][string]$DataDir,
-  [int]$Width = 400,
-  [int]$Height = 540,
-  [int]$Margin = 12
+  [int]$Width = 440,
+  [int]$Height = 600
 )
 $ErrorActionPreference = "Stop"
 $libs = Join-Path $PSScriptRoot "webview2"
@@ -33,7 +36,9 @@ try {
 
   Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @"
 using System;
+using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Forms;
 
 public class HotkeyWindow : NativeWindow {
@@ -54,10 +59,37 @@ public static class Native {
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmd);
     [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr hIcon);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-    [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hWnd, int attr, ref int value, int size);
+    [DllImport("user32.dll")] static extern bool ReleaseCapture();
+    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hWnd, StringBuilder name, int max);
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
+    [StructLayout(LayoutKind.Sequential)] struct BlurBehind { public int flags; public bool enable; public IntPtr region; public bool transition; }
+    [DllImport("dwmapi.dll")] static extern int DwmEnableBlurBehindWindow(IntPtr hWnd, ref BlurBehind bb);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateRectRgn(int l, int t, int r, int b);
+
+    // Per-pixel transparency: with an empty blur region DWM honours the alpha channel, so the black window
+    // background disappears and only what the page draws stays visible.
+    public static int MakeTransparent(IntPtr hWnd) {
+        BlurBehind bb = new BlurBehind(); bb.flags = 3; bb.enable = true; bb.region = CreateRectRgn(0, 0, -1, -1);
+        return DwmEnableBlurBehindWindow(hWnd, ref bb);
+    }
+    // Hands the pressed mouse button over to Windows as if a title bar had been grabbed; returns when the drag ends
+    public static void Drag(IntPtr hWnd) { ReleaseCapture(); SendMessage(hWnd, 0xA1, (IntPtr)2, IntPtr.Zero); }
+    // True while another program covers a whole screen (a game, a video): the island steps aside then
+    public static bool ForegroundIsFullscreen(IntPtr own) {
+        IntPtr h = GetForegroundWindow();
+        if (h == IntPtr.Zero || h == own) return false;
+        StringBuilder sb = new StringBuilder(80); GetClassName(h, sb, 80); string c = sb.ToString();
+        if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd" || c == "XamlExplorerHostIslandWindow") return false;
+        RECT r; if (!GetWindowRect(h, out r)) return false;
+        Rectangle b = Screen.FromHandle(h).Bounds;
+        return r.L <= b.Left && r.T <= b.Top && r.R >= b.Right && r.B >= b.Bottom;
+    }
 }
 
-// A borderless panel that never appears in Alt+Tab or on the taskbar
+// A borderless window that never appears in Alt+Tab or on the taskbar
 public class PanelForm : Form {
     protected override CreateParams CreateParams {
         get { CreateParams cp = base.CreateParams; cp.ExStyle |= 0x80; return cp; } // WS_EX_TOOLWINDOW
@@ -80,21 +112,45 @@ $form.Text = "Offgrid"
 $form.FormBorderStyle = "None"
 $form.TopMost = $true
 $form.ShowInTaskbar = $false
+$form.MaximizeBox = $false
 $form.StartPosition = "Manual"
 $form.Size = New-Object System.Drawing.Size($Width, $Height)
-$form.BackColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+$form.BackColor = [System.Drawing.Color]::Black   # black + MakeTransparent = see-through
 
-function Place-Panel {
+# Puts the window at a remembered place; if that place is no longer on any screen (a monitor was unplugged),
+# or none is given, the island goes to the top centre of the main screen.
+function Place-Window($x, $y) {
+  if ($null -ne $x -and $null -ne $y) {
+    $grip = New-Object System.Drawing.Point(([int]$x + [int]($form.Width / 2)), ([int]$y + 26))   # where the pill is
+    foreach ($scr in [System.Windows.Forms.Screen]::AllScreens) {
+      if ($scr.Bounds.Contains($grip)) { $form.Location = New-Object System.Drawing.Point([int]$x, [int]$y); return }
+    }
+  }
   $area = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
-  $form.Location = New-Object System.Drawing.Point(($area.Right - $form.Width - $Margin), ($area.Bottom - $form.Height - $Margin))
+  $form.Location = New-Object System.Drawing.Point(($area.Left + [int](($area.Width - $form.Width) / 2)), $area.Top)
+}
+
+function Set-Shape($m) {
+  $k = $form.DeviceDpi / 96.0
+  $x = [int]($m.x * $k); $y = [int]($m.y * $k); $w = [int]($m.w * $k); $h = [int]($m.h * $k)
+  if ($w -lt 8 -or $h -lt 8) { return }
+  $d = [int][Math]::Max(2, [Math]::Min($m.r * 2 * $k, [Math]::Min($w, $h)))
+  $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+  $path.AddArc($x, $y, $d, $d, 180, 90); $path.AddArc($x + $w - $d, $y, $d, $d, 270, 90)
+  $path.AddArc($x + $w - $d, $y + $h - $d, $d, $d, 0, 90); $path.AddArc($x, $y + $h - $d, $d, $d, 90, 90)
+  $path.CloseFigure()
+  $old = $form.Region
+  $form.Region = New-Object System.Drawing.Region($path)
+  $path.Dispose()
+  if ($old) { $old.Dispose() }
 }
 
 $wv = New-Object Microsoft.Web.WebView2.WinForms.WebView2
 $wv.Dock = "Fill"
-$wv.DefaultBackgroundColor = [System.Drawing.Color]::FromArgb(32, 32, 32)
+$wv.DefaultBackgroundColor = [System.Drawing.Color]::Transparent
 $props = New-Object Microsoft.Web.WebView2.WinForms.CoreWebView2CreationProperties
 $props.UserDataFolder = $DataDir
-# The video card's memory belongs to the language model: the panel is drawn on the CPU
+# The video card's memory belongs to the language model: the island is drawn on the CPU (and still runs at full frame rate)
 $props.AdditionalBrowserArguments = "--disable-gpu --disable-features=msSmartScreenProtection"
 $wv.CreationProperties = $props
 $form.Controls.Add($wv)
@@ -121,6 +177,19 @@ $wv.add_CoreWebView2InitializationCompleted({
     $core.add_NewWindowRequested({ param($s2, $e2) $e2.Handled = $true })
     $core.add_PermissionRequested({ param($s2, $e2) $e2.State = [Microsoft.Web.WebView2.Core.CoreWebView2PermissionState]::Deny })
     $core.add_DownloadStarting({ param($s2, $e2) $e2.Cancel = $true })
+    # The page may ask for exactly two things: to reshape the window and to start dragging it
+    $core.add_WebMessageReceived({
+      param($s2, $e2)
+      try {
+        if (-not $script:origin -or -not $e2.Source.StartsWith($script:origin + "/")) { return }
+        $m = $e2.WebMessageAsJson | ConvertFrom-Json
+        if ($m.t -eq "box") { Set-Shape $m }
+        elseif ($m.t -eq "drag") {
+          [Native]::Drag($form.Handle)
+          Emit @{ t = "moved"; x = $form.Location.X; y = $form.Location.Y }
+        }
+      } catch { Emit @{ t = "error"; error = $_.Exception.Message } }
+    })
     $script:coreReady = $true
     if ($script:pendingUrl) { $core.Navigate($script:pendingUrl); $script:pendingUrl = $null }
   } catch { Emit @{ t = "fatal"; error = $_.Exception.Message } }
@@ -128,31 +197,40 @@ $wv.add_CoreWebView2InitializationCompleted({
 $script:loaded = $false
 $wv.add_NavigationCompleted({
   param($s, $e)
-  if (-not $script:loaded) { $script:loaded = $true; Emit @{ t = "ready"; ok = [bool]$e.IsSuccess; browser = $wv.CoreWebView2.Environment.BrowserVersionString } }
+  if (-not $script:loaded) {
+    $script:loaded = $true
+    Emit @{ t = "ready"; ok = [bool]$e.IsSuccess; browser = $wv.CoreWebView2.Environment.BrowserVersionString }
+    if ($e.IsSuccess) { Show-Island }
+  }
 })
 
 $form.add_Activated({ Emit @{ t = "focus" } })
 $form.add_Deactivate({ Emit @{ t = "blur" } })
 $form.add_FormClosing({
   param($s, $e)
-  if (-not $script:quitting) { $e.Cancel = $true; Hide-Panel }
+  if (-not $script:quitting) { $e.Cancel = $true }   # Alt+F4 does not close the island
 })
 
-function Show-Panel([bool]$focus) {
-  Place-Panel
-  if ($focus) {
-    $form.Show()
-    $form.Activate()
-    [void][Native]::SetForegroundWindow($form.Handle)
-    [void]$wv.Focus()
-  } elseif (-not $script:visible) {
-    [void][Native]::ShowWindow($form.Handle, 4)   # SW_SHOWNOACTIVATE: appear without stealing focus
-  }
-  if (-not $script:visible) { $script:visible = $true; Emit @{ t = "shown" } }
+# The island is always on screen (without taking focus) unless a full-screen program is in front
+$script:aside = $false
+function Show-Island {
+  if ($script:aside) { return }
+  if (-not $script:visible) { [void][Native]::ShowWindow($form.Handle, 4); $script:visible = $true; Emit @{ t = "shown" } }   # SW_SHOWNOACTIVATE
 }
 
-function Hide-Panel {
-  if ($script:visible) { $form.Hide(); $script:visible = $false; Emit @{ t = "hidden" } }
+# Give the island the keyboard: the page has opened its panel and the user is about to type
+function Focus-Island {
+  $script:aside = $false
+  Show-Island
+  $form.Activate()
+  [void][Native]::SetForegroundWindow($form.Handle)
+  [void]$wv.Focus()
+}
+
+function Check-Fullscreen {
+  $full = [Native]::ForegroundIsFullscreen($form.Handle)
+  if ($full -and -not $script:aside) { $script:aside = $true; if ($script:visible) { $form.Hide(); $script:visible = $false; Emit @{ t = "hidden" } } }
+  elseif (-not $full -and $script:aside) { $script:aside = $false; if ($script:loaded) { Show-Island } }
 }
 
 # ---------- tray ----------
@@ -202,8 +280,8 @@ function Invoke-Command-Line([string]$line) {
       $script:origin = $u.GetLeftPart([System.UriPartial]::Authority)
       if ($script:coreReady) { $wv.CoreWebView2.Navigate($u.AbsoluteUri) } else { $script:pendingUrl = $u.AbsoluteUri }
     }
-    "show"   { Show-Panel ([bool]$cmd.focus) }
-    "hide"   { Hide-Panel }
+    "show"   { if ([bool]$cmd.focus) { Focus-Island } else { Show-Island } }
+    "place"  { Place-Window $cmd.x $cmd.y }
     "tray"   { if ($cmd.icon) { Set-TrayIcon $cmd.icon }; if ($cmd.tip) { $t = [string]$cmd.tip; if ($t.Length -gt 63) { $t = $t.Substring(0, 63) }; $tray.Text = $t } }
     "menu"   { Set-Menu $cmd.items }
     "hotkey" { $ok = $hotkey.Register([uint32]$cmd.mods, [uint32]$cmd.vk); Emit @{ t = "reply"; id = $cmd.id; ok = [bool]$ok } }
@@ -254,8 +332,10 @@ function Stop-Shell {
 $script:read = $stdin.ReadLineAsync()
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 30
+$script:beat = 0
 $timer.add_Tick({
   try {
+    if (++$script:beat % 25 -eq 0) { Check-Fullscreen }
     while ($script:read.IsCompleted) {
       $line = $script:read.Result
       if ($null -eq $line) { Stop-Shell; return }      # Node is gone
@@ -280,11 +360,10 @@ $timer.add_Tick({
   } catch { Emit @{ t = "error"; error = $_.Exception.Message } }
 })
 
-# The window handle must exist before WebView2 can attach to it; the panel itself stays hidden until asked
+# The window handle must exist before WebView2 can attach to it; the island appears once its page has loaded
 [void]$form.Handle
-$round = 2   # DWMWCP_ROUND: rounded corners on Windows 11
-[void][Native]::DwmSetWindowAttribute($form.Handle, 33, [ref]$round, 4)
-Place-Panel
+[void][Native]::MakeTransparent($form.Handle)
+Place-Window $null $null
 [void]$wv.EnsureCoreWebView2Async($null)
 $timer.Start()
 [System.Windows.Forms.Application]::Run()

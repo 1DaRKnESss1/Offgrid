@@ -20,6 +20,7 @@ const FILES = {
   '/bridge.js': ['bridge.js', 'text/javascript; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/settings.js': ['settings.js', 'text/javascript; charset=utf-8'],
+  '/island.js': ['island.js', 'text/javascript; charset=utf-8'],
 };
 const MAX_BODY = 64 * 1024;
 const COOKIE = 'offgrid';

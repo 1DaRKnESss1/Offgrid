@@ -24,7 +24,7 @@ import { iconPng } from './icon.js';
 import { Host } from './host.js';
 import { PanelServer } from './server.js';
 
-const WIDTH = 400, HEIGHT = 540;
+const WIDTH = 440, HEIGHT = 600; // вікно острівця: видно в ньому лише сам острівець, решта прозора
 const CONFIRM_TIMEOUT_MS = 60_000;
 const AUTO_HIDE_MS = 9_000;
 const ERROR_SHOWN_MS = 5_000;
@@ -51,6 +51,7 @@ let agent = null;
 let config = null, warnings = [];
 let state = 'idle';
 let hideTimer = null;
+let panelOpen = false; // острівець розкрито в повну панель
 let activeHotkey = null;
 let quitting = false;
 let turnActive = false; // триває запис, запит до моделі або озвучення
@@ -100,19 +101,26 @@ function setState(next) {
   ui.setTray({ icon: iconPng(state), tip: trayTip() });
 }
 
-// ---------- Панель ----------
+// ---------- Острівець і панель ----------
+// Острівець на екрані завжди й сам показує, що відбувається. «Показати панель» означає розкрити його в повну
+// панель і віддати їй клавіатуру; без focus робити нічого не треба — стан і так видно.
 function showPanel({ focus = true } = {}) {
   clearTimeout(hideTimer);
-  if (focus) { ui.show({ focus: true }); send({ type: 'focus-input' }); } else if (!ui.visible) ui.show({ focus: false });
+  if (!focus) return;
+  if (!panelOpen) { panelOpen = true; send({ type: 'panel', open: true }); }
+  ui.show({ focus: true });
+  send({ type: 'focus-input' });
 }
 
 function hidePanel() {
   clearTimeout(hideTimer);
-  if (ui.visible) ui.hide();
+  if (!panelOpen) return;
+  panelOpen = false;
+  send({ type: 'panel', open: false });
 }
 
 function togglePanel() {
-  if (ui.visible && ui.focused) hidePanel(); else showPanel();
+  if (panelOpen) hidePanel(); else showPanel();
 }
 
 // Гаряча клавіша: з голосом — «говорити / досить / замовкни», без голосу — показати або сховати панель
@@ -129,11 +137,11 @@ function onHotkey() {
   else togglePanel();
 }
 
-// Панель, показана без фокусу (відповідь прийшла, поки ти працюєш в іншому вікні), згодом ховається сама
+// Розкрита панель, з якої ти пішов в інше вікно посеред розмови, згодом згортається сама
 function scheduleAutoHide() {
   clearTimeout(hideTimer);
   hideTimer = setTimeout(() => {
-    if (ui.visible && !ui.focused && (state === 'idle' || state === 'error') && pendingConfirms.size === 0 && !dialogOpen) ui.hide();
+    if (panelOpen && !ui.focused && (state === 'idle' || state === 'error') && pendingConfirms.size === 0 && !dialogOpen && !SHOT) hidePanel();
   }, AUTO_HIDE_MS);
 }
 
@@ -236,7 +244,7 @@ const MENU_ACTIONS = {
 function rebuildTrayMenu() {
   if (!config) return;
   ui.setMenu([
-    { id: 'show', label: 'Показати панель' },
+    { id: 'show', label: 'Розкрити панель' },
     { id: 'new-chat', label: 'Нова розмова' },
     resources?.asleep
       ? { id: 'asleep', label: 'Спить — пам\'ять звільнено', enabled: false }
@@ -368,7 +376,7 @@ function endTurn() {
   if (quitting) return; // застосунок уже закривається
   send({ type: 'busy', value: false });
   if (state !== 'error') setState('idle');
-  if (!ui.focused) { showPanel({ focus: false }); scheduleAutoHide(); }
+  if (panelOpen && !ui.focused) scheduleAutoHide();
   armWake();
 }
 
@@ -748,7 +756,7 @@ const API = {
   ready: async () => ({
     state, busy: turnActive, asleep: !!resources?.asleep, hotkey: activeHotkey, model: config.model, warnings,
     speakReplies: config.speakReplies, voice: { status: speech?.status ?? 'off', error: speech?.error ?? null },
-    wake: { armed: !!wakeWait, name: config.wake.name },
+    wake: { armed: !!wakeWait, name: config.wake.name }, open: panelOpen,
   }),
   ask: async ({ text }) => { if (typeof text === 'string' && text.trim()) startTextTurn(text); return true; },
   listen: async () => { if (state === 'listening') speech.stopListening(); else startListening(); return true; },
@@ -757,6 +765,7 @@ const API = {
   confirm: async ({ id, allow }) => { pendingConfirms.get(String(id))?.finish(allow === true); return true; },
   'new-chat': async () => { newChat(); return true; },
   hide: async () => { hidePanel(); return true; },
+  show: async () => { showPanel(); return true; },
   settings: async ({ action, payload }) => (typeof action === 'string' ? handleSettings(action, payload) : null),
   ping: async () => ping(config),
   log: async () => readLog(150),
@@ -771,7 +780,7 @@ const API = {
 
 // ---------- Знімок для розробки ----------
 async function devScreenshot() {
-  showPanel();
+  if (process.env.OFFGRID_SHOT_VIEW !== 'island') showPanel(); // 'island' — знімок згорнутого острівця
   await new Promise((r) => setTimeout(r, 600));
   for (let i = 0; i < 360 && (speech?.status === 'starting' || voice?.status === 'starting') && process.env.OFFGRID_SHOT_ASK; i++) await new Promise((r) => setTimeout(r, 500));
   if (gpuPlan) await gpuPlan;
@@ -782,6 +791,8 @@ async function devScreenshot() {
     startTextTurn(phrase);
     await new Promise((r) => setTimeout(r, 500));
     for (let i = 0; i < 240 && (turnActive || pendingConfirms.size > 0); i++) await new Promise((r) => setTimeout(r, 500));
+  } else if (process.env.OFFGRID_SHOT_VIEW === 'island') {
+    await new Promise((r) => setTimeout(r, Number(process.env.OFFGRID_SHOT_WAIT) || 800));
   } else if (process.env.OFFGRID_SHOT_VIEW) {
     const [view, tab] = process.env.OFFGRID_SHOT_VIEW.split(':');
     send({ type: 'open-view', view, tab });
@@ -792,6 +803,19 @@ async function devScreenshot() {
   await new Promise((r) => setTimeout(r, 500));
   if (!(await ui.shot(SHOT))) console.error('Знімок не вдався');
   quit();
+}
+
+// Де на екрані стоїть острівець: його можна перетягнути, і місце запам'ятовується
+const SPOT_FILE = path.join(DATA_DIR, 'window.json');
+function readSpot() {
+  try {
+    const spot = JSON.parse(fs.readFileSync(SPOT_FILE, 'utf8'));
+    return Number.isInteger(spot?.x) && Number.isInteger(spot?.y) ? { x: spot.x, y: spot.y } : null;
+  } catch { return null; }
+}
+function saveSpot(spot) {
+  if (SHOT) return;
+  try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(SPOT_FILE, JSON.stringify(spot)); } catch { /* наступного разу стане на типове місце */ }
 }
 
 // ---------- Запуск і вихід ----------
@@ -899,9 +923,10 @@ async function start() {
   ui.on('tray-click', togglePanel);
   ui.on('menu', (id) => { if (Object.hasOwn(MENU_ACTIONS, id)) MENU_ACTIONS[id](); });
   ui.on('blur', onBlur);
+  ui.on('moved', saveSpot);
   ui.on('exit', () => { if (!quitting) { console.error('Оболонка несподівано закрилась — завершую роботу.'); quit(); } });
   try {
-    await ui.start({ url, dataDir: WEBVIEW_DATA, width: WIDTH, height: HEIGHT });
+    await ui.start({ url, dataDir: WEBVIEW_DATA, width: WIDTH, height: HEIGHT, spot: SHOT ? null : readSpot() });
   } catch (e) {
     console.error(e.message);
     quit();
