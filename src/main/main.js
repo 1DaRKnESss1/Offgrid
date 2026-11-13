@@ -76,6 +76,7 @@ let voice = null;         // сервіс якісного голосу (OmniVoi
 let voiceKey = '';
 let replanAfterTurn = false;   // розподіл відеопам'яті треба перерахувати після поточної розмови
 let planCountedVoice = false; // останній розподіл відеопам'яті вже врахував місце під якісний голос
+let lastTalker = '';      // яким голосом озвучено попередню відповідь
 let lastTalkEnd = 0;      // коли асистент востаннє замовк
 const pendingConfirms = new Map();
 
@@ -486,6 +487,11 @@ async function runTurn(text, { voice = false } = {}) {
     send({ type: 'assistant', text: reply });
     let interrupted = false;
     if (turnSpoke) {
+      const who = tts === voice ? 'якісний голос (OmniVoice)' : 'простий голос (Piper)';
+      if (who !== lastTalker) {
+        lastTalker = who;
+        logAction({ tool: 'app', args: {}, decision: 'auto', ok: true, message: `Відповіді озвучує ${who}` });
+      }
       setState('speaking');
       await queue;
       if (!speechBroken) {
@@ -796,8 +802,15 @@ app.whenReady().then(() => {
 
   voice = new Speech({
     onStatus: (s) => {
-      if (s.status === 'starting') return;
-      if (s.status === 'failed') send({ type: 'notice', text: `Якісний голос не запустився (${s.error ?? 'невідома помилка'}). Говорю простим голосом.` });
+      if (s.status === 'starting') { if (!resources?.asleep) send({ type: 'soft', text: 'Якісний голос завантажується (близько 20 с) — поки що говорю простим.' }); return; }
+      if (s.status === 'ready') {
+        logAction({ tool: 'app', args: {}, decision: 'auto', ok: true, message: 'Якісний голос готовий' });
+        send({ type: 'soft', text: 'Якісний голос готовий.' });
+      }
+      if (s.status === 'failed') {
+        logAction({ tool: 'app', args: {}, decision: 'error', ok: false, error: `Якісний голос не запустився: ${s.error ?? 'невідома помилка'}` });
+        send({ type: 'notice', text: `Якісний голос не запустився (${s.error ?? 'невідома помилка'}). Говорю простим голосом.` });
+      }
       if (resources?.asleep) return; // сервіс зупинено, щоб звільнити пам'ять, — ділити її зараз не треба
       // сервіс визначився (його модель уже у звичайній пам'яті) — тепер відеопам'ять можна поділити точно
       if (speech?.status !== 'starting') planGpu();
@@ -806,7 +819,8 @@ app.whenReady().then(() => {
 
   resources = new Resources({
     getConfig: () => config,
-    isBusy: () => turnActive || !!gpuPlan || !!waking || dialogOpen || quitting,
+    isBusy: () => turnActive || !!gpuPlan || !!waking || dialogOpen || quitting
+      || speech?.status === 'starting' || voice?.status === 'starting',
     release: async (reason) => {
       await unloadModel(config);
       await speech?.sleep().catch(() => false);
