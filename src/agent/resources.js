@@ -17,7 +17,7 @@ export class Resources {
    * deps:
    *   getConfig()            — чинні налаштування (idleUnloadMinutes, yieldToOtherApps)
    *   isBusy()               — триває розмова або підбір розподілу: зараз засинати не можна
-   *   release()              — звільнити пам'ять (async)
+   *   release(reason)        — звільнити пам'ять (async)
    *   readVram()             — { totalMb, usedMb } або null (async)
    *   onChange(asleep, why)  — стан змінився
    *   timers                 — { setTimeout, clearTimeout, setInterval, clearInterval } (підміняється в тестах)
@@ -59,7 +59,7 @@ export class Resources {
       this.timers.clearTimeout(this.idleTimer);
       this.idleTimer = null;
       this.tight = 0;
-      try { await this.release(); } catch { /* що змогли — звільнили */ }
+      try { await this.release(reason); } catch { /* що змогли — звільнили */ }
       this.onChange(true, reason);
       return true;
     })();

@@ -14,7 +14,7 @@ import { ping, setGpuLayers, unloadModel, preloadModel } from '../agent/ollama.j
 import { decideGpuLayers, readVram } from '../agent/gpu.js';
 import { Resources } from '../agent/resources.js';
 import { nodeOs } from '../tools/util.js';
-import { Speech } from '../speech/client.js';
+import { Speech, VOICE_SCRIPT } from '../speech/client.js';
 import { SentenceSplitter } from '../speech/sentences.js';
 import { finalTail } from '../agent/tone.js';
 import { iconPng } from './icon.js';
@@ -26,6 +26,13 @@ const WIDTH = 400, HEIGHT = 540, MARGIN = 12;
 const CONFIRM_TIMEOUT_MS = 60_000;
 const AUTO_HIDE_MS = 9_000;
 const ERROR_SHOWN_MS = 5_000;
+// Відеопам'ять мовних сервісів (заміряно). Розпізнавання й якісний голос не працюють одночасно, тому ділять
+// одне місце по черзі: голосова модель заходить на відеокарту лише щоб говорити (переїзд — 0,3 с).
+const STT_VRAM_MB = 1300;            // розпізнавання мови
+const VOICE_RESIDENT_MB = 1000;      // службові дані сервісу голосу — зайняті завжди, поки він запущений
+const VOICE_MODEL_MB = 1400;         // сама голосова модель, поки говорить
+const VOICE_OVER_STT_MB = 200;       // наскільки голосова модель більша за розпізнавання, з яким міняється місцем
+const SETTLE_AFTER_TALK_MS = 400; // пауза між власним голосом і записом
 const FOLLOW_UP_WAIT_S = 5; // скільки чекати на продовження розмови після відповіді
 // Стільки разів поспіль асистент слухає «продовження» сам. Далі потрібна клавіша: так розмова не може
 // тривати без кінця, якщо в кімнаті говорить телевізор, а людини поруч немає.
@@ -65,6 +72,11 @@ let listeningAuto = false; // зараз іде автоматичне «про�
 let heardSpeech = false;  // у поточному записі вже почуто мову // користувач зупинив поточний хід (Esc, ■, «Нова розмова»)
 let speech = null;
 let speechConfigKey = '';
+let voice = null;         // сервіс якісного голосу (OmniVoice); якщо його немає — говорить простий голос мовного сервісу
+let voiceKey = '';
+let replanAfterTurn = false;   // розподіл відеопам'яті треба перерахувати після поточної розмови
+let planCountedVoice = false; // останній розподіл відеопам'яті вже врахував місце під якісний голос
+let lastTalkEnd = 0;      // коли асистент востаннє замовк
 const pendingConfirms = new Map();
 
 const STATE_LABELS = {
@@ -120,7 +132,7 @@ function onHotkey() {
     if (listeningAuto && !heardSpeech) { listenNext = true; speech.cancel(); } else speech.stopListening();
   }
   // перебити відповідь (навіть якщо модель її ще дописує): замовкнути й одразу слухати
-  else if (state === 'speaking' || (turnActive && turnSpoke)) { listenNext = true; agent.cancel(); speech.cancel(); }
+  else if (state === 'speaking' || (turnActive && turnSpoke)) { listenNext = true; agent.cancel(); hush(); }
   else if (turnActive) showPanel({ focus: false });
   else if (speech?.ready) startListening();
   else togglePanel();
@@ -218,6 +230,7 @@ function applyConfig({ announce = false } = {}) {
   const skipSpeech = SHOT && !process.env.OFFGRID_SHOT_ASK;
   if (speech && !skipSpeech && (key !== speechConfigKey || (announce && speech.status === 'failed'))) { speechConfigKey = key; speech.start(config.speech); }
   else if (announce) planGpu(); // інші програми могли звільнити чи зайняти відеопам'ять
+  syncVoice({ retry: announce });
   resources?.touch();
   rebuildTrayMenu();
 
@@ -258,6 +271,44 @@ function rebuildTrayMenu() {
   ]));
 }
 
+// ---------- Голос ----------
+// Говорить якісний голос, якщо його сервіс готовий; інакше — простий голос мовного сервісу (запасний).
+const talker = () => (voice?.ready ? voice : speech);
+
+/** Замовкнути негайно (обидва голоси) і запам'ятати, коли це сталося. */
+function hush() {
+  if (voice?.ready) voice.cancel();
+  speech?.cancel();
+  lastTalkEnd = Date.now();
+}
+
+function voiceWanted() {
+  const skip = SHOT && !process.env.OFFGRID_SHOT_ASK;
+  return !skip && !!config.speech?.enabled && config.speech.voice?.engine === 'omnivoice'
+    && (config.speakReplies || !!process.env.OFFGRID_SHOT_SOUND);
+}
+
+// Запускає або зупиняє сервіс якісного голосу відповідно до налаштувань. Якщо озвучення вимкнене,
+// сервіс не тримаємо взагалі: він займає 2 ГБ відеопам'яті, які тоді дістаються моделі асистента.
+function syncVoice({ retry = false } = {}) {
+  if (!voice) return;
+  const v = config.speech?.voice;
+  const key = voiceWanted() ? JSON.stringify(v) : '';
+  if (key === voiceKey && !(retry && key && voice.status === 'failed')) return;
+  voiceKey = key;
+  if (!key) { voice.stop(); return; }
+  voice.start({ enabled: true, python: v.python }, {
+    script: VOICE_SCRIPT,
+    env: {
+      HF_HOME: v.modelDir,
+      OFFGRID_VOICE_PROMPT: v.prompt ?? '',
+      OFFGRID_VOICE_INSTRUCT: v.instruct ?? '',
+      OFFGRID_VOICE_SPEED: String(v.speed),
+      OFFGRID_VOICE_STEPS: String(v.steps),
+    },
+  });
+}
+
 // ---------- Розмова ----------
 function newChat() {
   cancelAll();
@@ -270,7 +321,7 @@ function cancelAll() {
   turnCancelled = true; // хід має зупинитися, на якому б кроці він не був
   agent.cancel();
   denyAllConfirms();
-  speech?.cancel(); // зупиняє і запис, і озвучення
+  hush(); // зупиняє і запис, і озвучення
 }
 
 function showError(text) {
@@ -283,6 +334,7 @@ function showError(text) {
 function endTurn() {
   turnActive = false;
   resources?.touch(); // відлік простою починається після кожної розмови
+  if (replanAfterTurn) { replanAfterTurn = false; planGpu(); }
   if (quitting || !win || win.isDestroyed()) return; // застосунок уже закривається
   send({ type: 'busy', value: false });
   if (state !== 'error') setState('idle');
@@ -293,7 +345,8 @@ function setSpeakReplies(value) {
   config.speakReplies = value === true;
   logAction({ tool: 'settings', args: { change: 'speakReplies', on: config.speakReplies }, decision: 'user', ok: true });
   if (!saveSetting('speakReplies', config.speakReplies)) send({ type: 'notice', text: 'Не вдалося зберегти налаштування озвучення — воно діятиме до перезапуску.' });
-  if (!config.speakReplies && (state === 'speaking' || turnSpoke)) speech?.cancel();
+  if (!config.speakReplies && (state === 'speaking' || turnSpoke)) hush();
+  syncVoice(); // якісний голос запускається лише тоді, коли озвучення ввімкнене
   send({ type: 'speak-setting', value: config.speakReplies });
   rebuildTrayMenu();
 }
@@ -302,13 +355,22 @@ function setSpeakReplies(value) {
 // Викликається, коли мовний сервіс запустився чи зупинився, і після «Перечитати налаштування».
 function planGpu({ force = false, reserveSpeech = false } = {}) {
   if (gpuPlan) return gpuPlan;
+  // посеред розмови модель не чіпаємо — перерахуємо, щойно розмова закінчиться
+  if (turnActive && !force) { replanAfterTurn = true; return null; }
   if ((turnActive && !force) || quitting || resources?.asleep || (SHOT && !process.env.OFFGRID_SHOT_ASK)) return null;
   gpuPlan = (async () => {
     try {
       // поки мовний сервіс ще вантажиться й може зайняти відеокарту — лишаємо під нього місце
       // (або щойно прокинувся й ще не повернув свою модель на відеокарту)
       const pending = reserveSpeech || (speech?.status === 'starting' && config.speech?.enabled && config.speech.device !== 'cpu');
-      const plan = await decideGpuLayers(config, { reserveMb: pending ? 1300 : 0 });
+      // якісний голос ще вантажиться або спить (його модель тимчасово не у відеопам'яті)
+      // якісний голос: службова частина зайнята постійно (якщо сервіс уже запущений — вона вже врахована
+      // серед «іншого»), а модель міняється місцем із розпізнаванням або, якщо те на процесорі, потребує свого
+      const sttOnGpu = pending || (speech?.ready && speech.device === 'gpu');
+      const voiceComing = voice?.status === 'starting';
+      planCountedVoice = voiceComing || !!voice?.ready;
+      const forVoice = !planCountedVoice ? 0 : (voiceComing ? VOICE_RESIDENT_MB : 0) + (sttOnGpu ? VOICE_OVER_STT_MB : VOICE_MODEL_MB);
+      const plan = await decideGpuLayers(config, { reserveMb: (pending ? STT_VRAM_MB : 0) + forVoice });
       setGpuLayers(plan.layers);
       logAction({ tool: 'app', args: {}, decision: 'auto', ok: true,
         message: `Відеопам'ять: ${plan.note}; розпізнавання мови — ${speech?.ready ? (speech.device === 'gpu' ? 'на відеокарті' : 'на процесорі') : 'вимкнене'}` });
@@ -326,6 +388,7 @@ function wakeUp() {
   waking = (async () => {
     try {
       if (!(await resources?.wake())) return;
+      syncVoice();          // якщо сервіс голосу зупиняли, щоб звільнити пам'ять, — запускаємо знову
       await planGpu({ force: true, reserveSpeech: speech?.ready && speech.device === 'gpu' });
       preloadModel(config); // у фоні: поки ти говориш, модель уже вантажиться
     } finally { waking = null; }
@@ -351,7 +414,10 @@ function onSleepChange(asleep, why) {
 async function runTurn(text, { voice = false } = {}) {
   const generation = agent.generation;
   const current = () => generation === agent.generation; // false, якщо посеред ходу почали нову розмову
-  const mayTalk = () => (config.speakReplies || process.env.OFFGRID_SHOT_SOUND) && speech?.ready
+  const tts = talker(); // хто говорить у цьому ході — не змінюється посеред відповіді
+  const swap = tts === voice && speech?.ready && speech.device === 'gpu'; // голос і розпізнавання міняються місцем
+  let voiceUp = false;
+  const mayTalk = () => (config.speakReplies || process.env.OFFGRID_SHOT_SOUND) && tts?.ready
     && !turnCancelled && current() && (!SHOT || process.env.OFFGRID_SHOT_SOUND); // у режимі знімка зазвичай мовчимо
   let raw = '';             // текст, який модель написала в поточному кроці
   let held = [];            // речення, які ще не пішли на озвучення (запитання наприкінці притримуємо)
@@ -363,7 +429,7 @@ async function runTurn(text, { voice = false } = {}) {
 
   const breakSpeech = (e) => {
     speechBroken = true;
-    speech?.cancel(); // те, що вже звучить, без нашого нагляду лишати не можна
+    hush(); // те, що вже звучить, без нашого нагляду лишати не можна
     if (current()) send({ type: 'notice', text: `Не вдалося озвучити: ${e.message}` });
   };
   const enqueue = (sentence) => {
@@ -372,7 +438,7 @@ async function runTurn(text, { voice = false } = {}) {
     const mine = epoch;
     queue = queue.then(async () => {
       if (speechBroken || turnCancelled || listenNext || mine !== epoch || !current()) return;
-      if (await speech.say(sentence)) said = true;
+      if (await tts.say(sentence)) said = true;
     }).catch(breakSpeech);
   };
   // Речення-запитання притримуємо: якщо воно виявиться останнім, остаточний текст вирішить, чи його казати
@@ -396,12 +462,17 @@ async function runTurn(text, { voice = false } = {}) {
       held = [];
       raw = '';
       epoch++;
-      if (turnSpoke) speech?.cancel();
+      if (turnSpoke) hush();
       if (current()) send({ type: 'reply-reset' });
     },
   };
 
   try {
+    if (tts === voice && mayTalk()) {
+      // розпізнавання своє зробило — звільняє місце, і поки модель думає, туди заходить голос (0,3 с)
+      voiceUp = true;
+      (swap ? speech.sleep().catch(() => false) : Promise.resolve()).then(() => voice.wake());
+    }
     if (waking) await waking;   // асистент прокидається після «сну»
     if (gpuPlan) await gpuPlan; // розподіл відеопам'яті саме підбирається — секунду чекаємо
     const reply = await agent.ask(text);
@@ -418,7 +489,8 @@ async function runTurn(text, { voice = false } = {}) {
       setState('speaking');
       await queue;
       if (!speechBroken) {
-        try { interrupted = (await speech.finishSpeaking()).interrupted; } catch (e) { breakSpeech(e); }
+        try { interrupted = (await tts.finishSpeaking()).interrupted; } catch (e) { breakSpeech(e); }
+        lastTalkEnd = Date.now();
       }
     }
     if (!current() || turnCancelled) return false;
@@ -426,7 +498,7 @@ async function runTurn(text, { voice = false } = {}) {
     return voice && said && !interrupted && !speechBroken && config.followUp; // розмова голосом триває
   } catch (e) {
     denyAllConfirms();
-    if (turnSpoke) speech?.cancel();
+    if (turnSpoke) hush();
     if (!current()) return false;
     if (listenNext && !turnCancelled) return true;     // перебито клавішею, поки модель ще дописувала відповідь
     if (e.message === 'Скасовано') send({ type: 'stopped' }); else showError(e.message);
@@ -434,6 +506,11 @@ async function runTurn(text, { voice = false } = {}) {
   } finally {
     replySink = null;
     turnSpoke = false;
+    if (voiceUp) {
+      // відповідь договорено: голос повертається у звичайну пам'ять, розпізнавання — на відеокарту
+      await voice.sleep().catch(() => false);
+      if (swap) speech.wake();
+    }
   }
 }
 
@@ -475,6 +552,9 @@ async function startListening() {
       setState('listening');
       showPanel({ focus: false });
       const generation = agent.generation;
+      // якісний голос звучить з іншого процесу, тож паузу після нього витримуємо тут
+      const settle = SETTLE_AFTER_TALK_MS - (Date.now() - lastTalkEnd);
+      if (settle > 0) await new Promise((r) => setTimeout(r, settle));
       let heard;
       try {
         heard = await speech.listen((event) => {
@@ -641,7 +721,8 @@ function registerIpc() {
 async function devScreenshot() {
   showPanel();
   await new Promise((r) => setTimeout(r, 400));
-  for (let i = 0; i < 360 && speech?.status === 'starting' && process.env.OFFGRID_SHOT_ASK; i++) await new Promise((r) => setTimeout(r, 500));
+  for (let i = 0; i < 360 && (speech?.status === 'starting' || voice?.status === 'starting') && process.env.OFFGRID_SHOT_ASK; i++) await new Promise((r) => setTimeout(r, 500));
+  if (gpuPlan) await gpuPlan;
   const phrase = process.env.OFFGRID_SHOT_ASK;
   if (phrase) {
     // справжній наскрізний запит: панель -> IPC -> агент -> модель -> панель
@@ -669,7 +750,7 @@ async function devScreenshot() {
 // ---------- Запуск ----------
 app.on('second-instance', () => showPanel());
 app.on('window-all-closed', () => { /* застосунок живе в треї */ });
-app.on('will-quit', () => { globalShortcut.unregisterAll(); resources?.stop(); speech?.stop(); });
+app.on('will-quit', () => { globalShortcut.unregisterAll(); resources?.stop(); speech?.stop(); voice?.stop(); });
 // Жодне вікно застосунку не має права щось відкривати чи кудись переходити
 app.on('web-contents-created', (_e, contents) => {
   contents.on('will-attach-webview', (e) => e.preventDefault());
@@ -707,14 +788,34 @@ app.whenReady().then(() => {
     onStatus: (s) => {
       send({ type: 'voice', status: s.status, error: s.error });
       // мовний сервіс визначився (зайняв відеокарту чи ні) — тепер можна ділити відеопам'ять для моделі
-      if (s.status !== 'starting') planGpu();
+      // …але якщо сервіс якісного голосу ще вантажиться, чекаємо на нього: посеред завантаження його модель
+      // тимчасово лежить у відеопам'яті, і розрахунок вийшов би надто обережним
+      if (s.status !== 'starting' && voice?.status !== 'starting') planGpu();
+    },
+  });
+
+  voice = new Speech({
+    onStatus: (s) => {
+      if (s.status === 'starting') return;
+      if (s.status === 'failed') send({ type: 'notice', text: `Якісний голос не запустився (${s.error ?? 'невідома помилка'}). Говорю простим голосом.` });
+      if (resources?.asleep) return; // сервіс зупинено, щоб звільнити пам'ять, — ділити її зараз не треба
+      // сервіс визначився (його модель уже у звичайній пам'яті) — тепер відеопам'ять можна поділити точно
+      if (speech?.status !== 'starting') planGpu();
     },
   });
 
   resources = new Resources({
     getConfig: () => config,
     isBusy: () => turnActive || !!gpuPlan || !!waking || dialogOpen || quitting,
-    release: async () => { await unloadModel(config); await speech?.sleep().catch(() => false); },
+    release: async (reason) => {
+      await unloadModel(config);
+      await speech?.sleep().catch(() => false);
+      // Після простою сервіс голосу лишається запущеним (його модель і так у звичайній пам'яті) — так він
+      // прокидається миттєво. Якщо ж пам'ять звільняють навмисно чи для іншої програми, зупиняємо його
+      // зовсім: це ще близько 1 ГБ відеопам'яті; після пробудження він запуститься знову за ~20 с.
+      if (reason === 'idle') await voice?.sleep().catch(() => false);
+      else if (voice && voiceKey) { voiceKey = ''; await voice.stop(); }
+    },
     readVram,
     onChange: onSleepChange,
   });

@@ -1,4 +1,5 @@
 // Клієнт мовного сервісу: запускає speech/speech_server.py і розмовляє з ним через 127.0.0.1.
+// Цей самий клас керує й сервісом якісного голосу (speech/voice_server.py): протокол озвучення в них однаковий.
 // Сервіс сам обирає вільний порт і отримує одноразовий токен; без токена він не відповідає нікому.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -6,6 +7,7 @@ import path from 'node:path';
 import { ROOT } from '../paths.js';
 
 const SCRIPT = path.join(ROOT, 'speech', 'speech_server.py');
+export const VOICE_SCRIPT = path.join(ROOT, 'speech', 'voice_server.py');
 const START_TIMEOUT_MS = 180_000; // перше завантаження моделей із диска буває довгим
 const LISTEN_TIMEOUT_MS = 90_000;
 const MAX_SPEAK_CHARS = 1200;
@@ -45,6 +47,9 @@ export class Speech {
 
   get ready() { return this.status === 'ready'; }
 
+  /** Чи тримає цей сервіс щось у відеопам'яті. */
+  get usesGpu() { return this.device === 'gpu' || this.device === 'omnivoice'; }
+
   #set(status, error = null) {
     this.status = status;
     this.error = error;
@@ -64,8 +69,8 @@ export class Speech {
     if (child) this.#kill(child);
   }
 
-  // script та interpreterArgs підміняються лише в тестах
-  async start(cfg, { script = SCRIPT, interpreterArgs = ['-u'] } = {}) {
+  // script та interpreterArgs підміняються в тестах; env — власні змінні середовища для іншого сервісу (голос)
+  async start(cfg, { script = SCRIPT, interpreterArgs = ['-u'], env = null } = {}) {
     const id = ++this.startId;
     this.#dropChild();
     if (!cfg?.enabled) { this.#set('off'); return; }
@@ -85,13 +90,15 @@ export class Speech {
           PYTHONIOENCODING: 'utf-8',
           OFFGRID_SPEECH_PORT: '0', // сервіс сам займе вільний порт і повідомить його в рядку READY
           OFFGRID_SPEECH_TOKEN: this.token,
-          OFFGRID_WHISPER_DIR: cfg.whisperDir,
-          OFFGRID_WHISPER_MODEL: cfg.whisperModel,
-          OFFGRID_WHISPER_LIVE_MODEL: cfg.liveModel ?? '',
-          OFFGRID_WHISPER_DEVICE: cfg.device ?? 'auto',
-          OFFGRID_WHISPER_GPU_MODEL: cfg.gpuModel ?? 'large-v3-turbo',
-          OFFGRID_PIPER_VOICE: cfg.piperVoice,
-          OFFGRID_SPEECH_SPEED: String(cfg.speed ?? 1),
+          ...(env ?? {
+            OFFGRID_WHISPER_DIR: cfg.whisperDir,
+            OFFGRID_WHISPER_MODEL: cfg.whisperModel,
+            OFFGRID_WHISPER_LIVE_MODEL: cfg.liveModel ?? '',
+            OFFGRID_WHISPER_DEVICE: cfg.device ?? 'auto',
+            OFFGRID_WHISPER_GPU_MODEL: cfg.gpuModel ?? 'large-v3-turbo',
+            OFFGRID_PIPER_VOICE: cfg.piperVoice,
+            OFFGRID_SPEECH_SPEED: String(cfg.speed ?? 1),
+          }),
         },
       });
     } catch (e) {
@@ -112,7 +119,7 @@ export class Speech {
       child.stdout.on('data', (d) => {
         if (out === null) return;
         out = (out + d).slice(-2000);
-        const m = out.match(/READY http:\/\/127\.0\.0\.1:(\d{2,5})(?: stt=(gpu|cpu))?[^\n]*\n/);
+        const m = out.match(/READY http:\/\/127\.0\.0\.1:(\d{2,5})(?: (?:stt|voice)=([a-z]+))?[^\n]*\n/);
         if (m) { out = null; done({ port: Number(m[1]), device: m[2] ?? 'cpu' }); }
       });
       child.stderr.on('data', (d) => { errTail = (errTail + d).slice(-800); });
@@ -132,7 +139,7 @@ export class Speech {
       return;
     }
     this.base = `http://127.0.0.1:${result.port}`;
-    this.device = result.device; // 'gpu', якщо розпізнавання працює на відеокарті
+    this.device = result.device; // 'gpu' — розпізнавання на відеокарті; 'omnivoice' — сервіс якісного голосу
     child.once('exit', () => {
       if (this.child !== child) return;
       this.child = null;
@@ -206,10 +213,16 @@ export class Speech {
 
   /** Звільнити відеопам'ять: розпізнавання вивантажується з відеокарти й повернеться саме з наступним записом. */
   async sleep() {
-    if (!this.ready || this.device !== 'gpu') return false;
+    if (!this.ready || !this.usesGpu) return false;
     const res = await this.#post('/sleep', {}, AbortSignal.timeout(15_000));
     const data = await res.json().catch(() => ({}));
     return !!data.freed;
+  }
+
+  /** Повернути модель на відеокарту заздалегідь, щоб наступний запис чи відповідь на неї не чекали. */
+  async wake() {
+    if (!this.ready || !this.usesGpu) return;
+    await this.#post('/wake', {}, AbortSignal.timeout(30_000)).catch(() => {});
   }
 
   /** Скасувати запис і замовкнути. Запис скасовується одразу, не чекаючи відповіді сервісу. */

@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DEFAULT_CONFIG, SETTINGS_FILE, DATA_DIR } from '../paths.js';
+import { DEFAULT_CONFIG, SETTINGS_FILE, DATA_DIR, ROOT } from '../paths.js';
 import { isInside } from './pathguard.js';
 
 const KEY_RE = /^[a-z][a-z0-9_]{0,30}$/;
@@ -82,8 +82,39 @@ function forbiddenFolder(real) {
 
 const MODEL_NAME = /^[a-z0-9][a-z0-9._-]{0,40}$/i;
 
+// Якісний голос (OmniVoice). Потребує окремого середовища Python, моделі на диску й відеокарти.
+// Якщо чогось бракує — тихо лишається простий голос Piper; якщо рушій вимагали явно — з поясненням.
+function validateVoice(raw, defaults, warn) {
+  const piper = { engine: 'piper' };
+  const src = isObject(raw) ? { ...defaults, ...raw } : defaults;
+  if (raw !== undefined && !isObject(raw)) warn('speech.voice записано неправильно — використано типові значення');
+  if (!isObject(src)) return piper;
+  const engine = ['auto', 'piper', 'omnivoice'].includes(src.engine) ? src.engine : 'auto';
+  if (src.engine !== undefined && engine !== src.engine) warn('speech.voice.engine: дозволені значення auto, piper, omnivoice');
+  if (engine === 'piper') return piper;
+  const must = engine === 'omnivoice'; // вимагали явно — тоді про проблему кажемо
+  const fail = (why) => { if (must) warn(`Якісний голос недоступний: ${why} — працює простий голос`); return piper; };
+  const abs = (p) => (typeof p === 'string' && p.trim() ? path.resolve(ROOT, p) : null);
+  const python = abs(src.python);
+  if (!python || !/\.exe$/i.test(python) || !DRIVE_PATH.test(python) || !exists(python)) return fail('немає середовища speech\\tts-env');
+  const modelDir = abs(src.modelDir);
+  if (!modelDir || !DRIVE_PATH.test(modelDir) || !exists(modelDir)) return fail('не знайдено папку з моделлю');
+  let prompt = abs(src.prompt);
+  if (prompt && (!DRIVE_PATH.test(prompt) || !/\.pt$/i.test(prompt) || !exists(prompt))) prompt = null;
+  let instruct = '';
+  if (typeof src.instruct === 'string' && /^[\p{L}\p{N} ,.'-]{1,120}$/u.test(src.instruct.trim())) instruct = src.instruct.trim();
+  if (!prompt && !instruct) return fail('немає ні відбитка голосу, ні його опису');
+  let speed = 1.1;
+  if (typeof src.speed === 'number' && src.speed >= 0.5 && src.speed <= 1.5) speed = src.speed;
+  else if (src.speed !== undefined) warn('speech.voice.speed: потрібне число від 0.5 до 1.5 — використано 1.1');
+  let steps = 16;
+  if (Number.isInteger(src.steps) && src.steps >= 4 && src.steps <= 64) steps = src.steps;
+  else if (src.steps !== undefined) warn('speech.voice.steps: потрібне ціле число від 4 до 64 — використано 16');
+  return { engine: 'omnivoice', python, modelDir, prompt, instruct, speed, steps };
+}
+
 // Голос. Якщо щось не так — голос вимикається з поясненням, а текстовий режим працює далі.
-function validateSpeech(raw, warn) {
+function validateSpeech(raw, warn, defaultVoice) {
   const off = { enabled: false };
   if (raw === undefined) return off;
   if (!isObject(raw)) { warn('Розділ «speech» записано неправильно — голос вимкнено'); return off; }
@@ -116,7 +147,8 @@ function validateSpeech(raw, warn) {
     if (typeof raw.gpuModel === 'string' && MODEL_NAME.test(raw.gpuModel)) gpuModel = raw.gpuModel;
     else warn('speech.gpuModel: некоректна назва — використано large-v3-turbo');
   }
-  return { enabled: true, python, whisperDir: dir, whisperModel: raw.whisperModel, liveModel, piperVoice: voice, speed, device, gpuModel };
+  return { enabled: true, python, whisperDir: dir, whisperModel: raw.whisperModel, liveModel, piperVoice: voice, speed, device, gpuModel,
+    voice: validateVoice(raw.voice, defaultVoice, warn) };
 }
 
 /**
@@ -160,7 +192,7 @@ export function validateConfig(raw, defaults, toolModes = null) {
   }
   // звільняти відеопам'ять, коли її бракує іншій програмі (наприклад, запущено гру)
   cfg.yieldToOtherApps = typeof raw.yieldToOtherApps === 'boolean' ? raw.yieldToOtherApps : defaults.yieldToOtherApps !== false;
-  cfg.speech = validateSpeech(raw.speech === undefined ? defaults.speech : raw.speech, warn);
+  cfg.speech = validateSpeech(raw.speech === undefined ? defaults.speech : raw.speech, warn, defaults.speech?.voice);
 
   // Білі списки: якщо розділу немає або він не того типу — список ПОРОЖНІЙ, а не типовий
   const section = (key, check, empty) => {

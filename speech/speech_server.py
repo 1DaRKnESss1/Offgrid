@@ -23,6 +23,7 @@
   POST /say     -> тіло {"text": "речення"}; додає речення до озвучення й одразу повертається
   POST /say-done-> більше речень не буде; чекає, доки все прозвучить: {"ok":true,"interrupted":..,"audio_s":..}
   POST /speak   -> те саме, що /say і /say-done разом (один текст цілком)
+  POST /wake    -> повернути модель розпізнавання на відеокарту заздалегідь (у фоні)
   POST /sleep   -> звільнити відеопам'ять: модель розпізнавання вивантажується з відеокарти.
                    Повертається сама, щойно почнеться наступний запис (близько 2 с, у фоні)
 
@@ -522,6 +523,11 @@ class Handler(BaseHTTPRequestHandler):
                 wait_s = data.get("wait_s", WAIT_FOR_SPEECH_S)
                 wait_s = float(wait_s) if isinstance(wait_s, (int, float)) and not isinstance(wait_s, bool) else WAIT_FOR_SPEECH_S
                 self._listen_stream(min(15.0, max(2.0, wait_s)), data.get("strict") is True)
+            elif self.path == "/wake":
+                # повернути розпізнавання на відеокарту заздалегідь (у фоні), щоб наступний запис не чекав
+                if ON_GPU and not GPU_LOADED:
+                    threading.Thread(target=gpu_wake, daemon=True).start()
+                self._json(200, {"ok": True})
             elif self.path == "/sleep":
                 if LISTEN_LOCK.locked():
                     return self._json(409, {"ok": False, "error": "Я зараз слухаю"})

@@ -121,3 +121,46 @@ test('голос: без запущеного сервісу клієнт від
   speech.stopListening();
   fs.rmSync(TMP, { recursive: true, force: true });
 });
+
+// ---------- Якісний голос (OmniVoice) ----------
+test('якісний голос: вмикається лише коли є все потрібне, інакше тихо лишається простий', () => {
+  fs.mkdirSync(TMP, { recursive: true });
+  const py = path.join(TMP, 'python.exe');
+  const pt = path.join(TMP, 'voice.pt');
+  const onnx = path.join(TMP, 'voice.onnx');
+  for (const f of [py, pt, onnx]) fs.writeFileSync(f, 'x');
+  const base = { ...good, piperVoice: onnx };
+  const full = { engine: 'auto', python: py, modelDir: TMP, prompt: pt, instruct: 'male, low pitch', speed: 1.2, steps: 8 };
+  const voiceOf = (voice) => validateConfig({ ...defaults, speech: { ...base, voice } }, defaults);
+
+  const ok = voiceOf(full);
+  assert.equal(ok.config.speech.voice.engine, 'omnivoice');
+  assert.equal(ok.config.speech.voice.prompt, pt);
+  assert.equal(ok.config.speech.voice.steps, 8);
+  assert.equal(ok.warnings.length, 0);
+
+  // «auto» без середовища чи моделі — простий голос і жодних зауваг (на іншому ПК це нормальний стан)
+  for (const broken of [{ ...full, python: path.join(TMP, 'нема.exe') }, { ...full, modelDir: path.join(TMP, 'нема') },
+    { ...full, prompt: path.join(TMP, 'нема.pt'), instruct: '' }]) {
+    const r = voiceOf(broken);
+    assert.equal(r.config.speech.voice.engine, 'piper', JSON.stringify(broken));
+    assert.equal(r.warnings.length, 0, JSON.stringify(broken));
+  }
+  // якщо якісний голос вимагали явно — пояснюємо, чому його немає
+  const must = voiceOf({ ...full, engine: 'omnivoice', python: path.join(TMP, 'нема.exe') });
+  assert.equal(must.config.speech.voice.engine, 'piper');
+  assert.equal(must.warnings.length, 1);
+  assert.equal(voiceOf({ ...full, engine: 'piper' }).config.speech.voice.engine, 'piper');
+
+  // без відбитка годиться опис; небезпечні чи безглузді значення не проходять
+  assert.equal(voiceOf({ ...full, prompt: '' }).config.speech.voice.prompt, null);
+  assert.equal(voiceOf({ ...full, prompt: '' }).config.speech.voice.engine, 'omnivoice');
+  assert.equal(voiceOf({ ...full, prompt: '', instruct: 'male"; rm -rf' }).config.speech.voice.engine, 'piper');
+  assert.equal(voiceOf({ ...full, python: 'python.exe -c evil' }).config.speech.voice.engine, 'piper');
+  assert.equal(voiceOf({ ...full, python: '\\server\share\python.exe' }).config.speech.voice.engine, 'piper');
+  const odd = voiceOf({ ...full, speed: 9, steps: 1000 });
+  assert.equal(odd.config.speech.voice.speed, 1.1);
+  assert.equal(odd.config.speech.voice.steps, 16);
+  assert.equal(odd.warnings.length, 2);
+  fs.rmSync(TMP, { recursive: true, force: true });
+});
