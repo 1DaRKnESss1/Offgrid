@@ -110,6 +110,8 @@ MAX_SPEAK_CHARS = 1500
 WAKE_DEBUG = os.environ.get("OFFGRID_WAKE_DEBUG") == "1"  # застосунок цього ніколи не вмикає
 WAKE_SILENCE_S = 0.7       # у режимі очікування імені: стільки тиші закінчує фразу
 WAKE_MAX_S = 10            # …і довших фраз не чекаємо
+WAKE_MIN_THRESHOLD = 0.003  # найнижчий поріг гучності в режимі очікування імені
+WAKE_SPEECH_S = 0.18       # стільки звуку поспіль має бути гучнішим за поріг, щоб почати слухати фразу
 WAKE_MATCH = 0.78          # наскільки почуте слово має бути схожим на ім'я (1.0 — буква в букву)
 BLOCK = int(SAMPLE_RATE * BLOCK_S)
 
@@ -210,14 +212,22 @@ SPECULATE = SPECULATE and len(FINAL_MODELS) > 1
 
 # ---------- Мікрофон ----------
 THRESHOLD = MIN_THRESHOLD
+NOISE = 0.0                # виміряний фоновий шум (RMS)
 MIC_ERROR = None
+
+
+def wake_threshold():
+    """Поріг для очікування імені. Людина тоді говорить не в мікрофон, а з того місця, де сидить, тож він
+    нижчий за звичайний: удвічі з половиною вище за фоновий шум, але не нижче WAKE_MIN_THRESHOLD."""
+    return min(THRESHOLD, max(WAKE_MIN_THRESHOLD, NOISE * 2.5))
 
 
 def set_threshold(levels):
     """Поріг мови = утричі вище за фоновий шум. Шум беремо як тихіші 20% виміряних відрізків,
     тож окремі гучні звуки (музика, голос) його не завищують; до того ж поріг обмежено зверху."""
-    global THRESHOLD
+    global THRESHOLD, NOISE
     if len(levels) >= 10:
+        NOISE = float(np.percentile(levels, 20))
         THRESHOLD = min(MAX_THRESHOLD, max(MIN_THRESHOLD, float(np.percentile(levels, 20)) * 3))
 
 
@@ -397,10 +407,11 @@ def wake_listen(emit, names):
                     return
                 data, _ = stream.read(BLOCK)
                 rms = float(np.sqrt(np.mean(data ** 2)))
+                threshold = wake_threshold()
                 if not started:
                     # початком мови вважаємо лише стійкий звук, а не клац чи стукіт
-                    loud = loud + BLOCK_S if rms > THRESHOLD else max(0.0, loud - BLOCK_S)
-                    if rms > THRESHOLD and loud >= STRICT_SPEECH_S:
+                    loud = loud + BLOCK_S if rms > threshold else max(0.0, loud - BLOCK_S)
+                    if rms > threshold and loud >= WAKE_SPEECH_S:
                         started, silence, total = True, 0.0, 0.0
                         chunks = list(pre_roll)
                         chunks.append(data.copy())
@@ -416,7 +427,7 @@ def wake_listen(emit, names):
                     continue
                 chunks.append(data.copy())
                 total += BLOCK_S
-                silence = silence + BLOCK_S if rms < THRESHOLD else 0.0
+                silence = silence + BLOCK_S if rms < threshold else 0.0
                 if silence < WAKE_SILENCE_S and total < WAKE_MAX_S:
                     continue
                 audio = np.concatenate(chunks).flatten()
