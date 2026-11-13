@@ -43,6 +43,7 @@ export class Speech {
     this.listening = null; // AbortController поточного запису
     this.device = 'cpu';
     this.onGpu = false;    // чи модель сервісу зараз справді у відеопам'яті (для розподілу відеопам'яті)
+    this.waiting = false;  // сервіс чекає на ім'я асистента
     this.startId = 0;      // зростає з кожним start()/stop(): застарілий запуск бачить це й відступає
   }
 
@@ -98,6 +99,7 @@ export class Speech {
             OFFGRID_WHISPER_LIVE_MODEL: cfg.liveModel ?? '',
             OFFGRID_WHISPER_DEVICE: cfg.device ?? 'auto',
             OFFGRID_WHISPER_GPU_MODEL: cfg.gpuModel ?? 'large-v3-turbo',
+            OFFGRID_WAKE_NAME: cfg.wakeName ?? '',
             OFFGRID_PIPER_VOICE: cfg.piperVoice,
             OFFGRID_SPEECH_SPEED: String(cfg.speed ?? 1),
           }),
@@ -208,6 +210,63 @@ export class Speech {
       throw e;
     } finally {
       this.listening = null;
+    }
+  }
+
+  /**
+   * Чекає, доки хтось назве асистента на ім'я. Повертає { text } — решту фрази після імені (може бути порожня),
+   * { cancelled: true } або кидає помилку. Усе, що сказано без імені, сервіс викидає сам і сюди не передає.
+   */
+  async waitForWake(names) {
+    if (!this.ready) throw new Error('Голос зараз недоступний');
+    if (this.listening) throw new Error('Я вже слухаю');
+    const abort = new AbortController();
+    this.listening = abort;
+    this.waiting = true;
+    try {
+      const res = await this.#post('/wake-listen', { names }, abort.signal);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Мовний сервіс: помилка ${res.status}`);
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for await (const chunk of res.body) {
+        buffer += decoder.decode(chunk, { stream: true });
+        let nl;
+        while ((nl = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line) continue;
+          let event;
+          try { event = JSON.parse(line); } catch { continue; }
+          if (event.type === 'wake') {
+            if (this.device === 'gpu') this.onGpu = event.gpu_loaded === true;
+            return { text: String(event.text ?? '').trim() };
+          }
+          if (event.type === 'cancelled') return { cancelled: true };
+          if (event.type === 'error') throw new Error(String(event.error ?? 'Помилка мовного сервісу'));
+        }
+      }
+      throw new Error('Мовний сервіс обірвав очікування');
+    } catch (e) {
+      if (abort.signal.aborted) return { cancelled: true };
+      throw e;
+    } finally {
+      this.listening = null;
+      this.waiting = false;
+    }
+  }
+
+  /** Перестати чекати на ім'я й дочекатися, доки сервіс справді відпустить мікрофон (інакше наступний запис відмовить). */
+  async stopWaiting() {
+    if (!this.waiting) return;
+    this.listening?.abort();
+    if (!this.ready) return;
+    await this.#post('/cancel', {}, AbortSignal.timeout(3000)).catch(() => {});
+    for (let i = 0; i < 150; i++) { // розпізнавання останньої фрази може тривати кілька секунд
+      try {
+        const res = await fetch(this.base + '/health', { headers: { 'X-Offgrid-Token': this.token }, signal: AbortSignal.timeout(1000) });
+        if (!(await res.json()).listening) return;
+      } catch { return; }
+      await new Promise((r) => setTimeout(r, 40));
     }
   }
 

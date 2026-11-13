@@ -27,6 +27,7 @@ let allowTimer = null;
 let ollamaNote = null; // попередження «Ollama не відповідає», поки воно на екрані
 let ollamaTimer = null;
 let asleep = false;  // пам'ять звільнено; прокинеться з першою командою
+let wake = null;     // { armed, name } — асистент чекає, доки його назвуть на ім'я
 let replyEl = null; // відповідь, яку модель пише просто зараз
 let liveEl = null; // бульбашка з текстом, який розпізнається просто зараз
 
@@ -113,6 +114,7 @@ function setHint() {
     const keys = hotkey.replace('Control', 'Ctrl').replaceAll('+', ' + ');
     parts.push(voice === 'ready' ? `${keys} — говорити або перебити` : `${keys} — показати або сховати`);
   }
+  if (wake?.armed) parts.unshift(`скажи «${wake.name}»`);
   parts.push('Esc — сховати');
   $('hint').textContent = parts.join(' · ');
 }
@@ -192,6 +194,7 @@ window.offgrid.onEvent((event) => {
     case 'focus-input': if ((window.offgridView?.current ?? 'chat') === 'chat') input.focus(); break;
     case 'capture-end': window.offgridView?.captureEnded(); break;
     case 'asleep': asleep = event.value === true; setState(state); break;
+    case 'wake': wake = { armed: event.armed === true, name: String(event.name ?? '') }; setHint(); break;
     case 'open-view': window.offgridView?.show(event.view, { tab: event.tab }); break;
     case 'demo': // лише для знімка під час розробки
       add('user', 'закрий блокнот');
@@ -237,6 +240,7 @@ renderControls();
 window.offgrid.ready().then((info) => {
   if (!info) return;
   asleep = info.asleep === true;
+  wake = info.wake ?? null;
   setState(info.state);
   setBusy(!!info.busy);
   applyVoice(info.voice);

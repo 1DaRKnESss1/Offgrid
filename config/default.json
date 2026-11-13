@@ -4,6 +4,11 @@
   "hotkey": "Control+Shift+Space",
   "speakReplies": true,
   "followUp": true,
+  "wake": {
+    "enabled": false,
+    "name": "Офгрід",
+    "aliases": ["offgrid", "оф грід"]
+  },
   "gpuLayers": "auto",
   "idleUnloadMinutes": 5,
   "yieldToOtherApps": true,

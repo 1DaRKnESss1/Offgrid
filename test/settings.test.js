@@ -194,3 +194,21 @@ test('екран налаштувань показує й записи, які �
   assert.equal(editSettings('removeFolder', { key: 'gone' }, TOOL_MODES).ok, true);
   assert.equal(load().warnings.length, 0);
 });
+
+test('відгук на ім\'я: вимкнений, доки користувач не ввімкне; ім\'я перевіряється', () => {
+  assert.equal(load().config.wake.enabled, false);
+  assert.equal(load().config.wake.name, 'Офгрід');
+  assert.deepEqual(editSettings('setWake', { enabled: true }, TOOL_MODES), { ok: true });
+  assert.deepEqual(editSettings('setWake', { name: 'Джарвіс' }, TOOL_MODES), { ok: true });
+  const cfg = load().config;
+  assert.equal(cfg.wake.enabled, true);
+  assert.equal(cfg.wake.name, 'Джарвіс');
+  assert.equal(cfg.speech.enabled ? cfg.speech.wakeName : 'Джарвіс', 'Джарвіс');
+  assert.equal(settingsView(cfg).wake.name, 'Джарвіс');
+  // надто коротке чи зі сторонніми знаками ім'я не записується
+  for (const bad of ['я', 'ок', '', '   ', 'ім"я; rm', '..']) assert.equal(editSettings('setWake', { name: bad }, TOOL_MODES).ok, false, bad);
+  assert.equal(raw().wake.name, 'Джарвіс');
+  // зіпсований уручну запис не вмикає режим
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ ...raw(), wake: { enabled: 'yes', name: 5 } }));
+  assert.equal(load().config.wake.enabled, false);
+});

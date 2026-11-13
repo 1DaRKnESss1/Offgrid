@@ -125,6 +125,18 @@ export const changes = {
     raw[list] = on === true ? [...rest, ext] : rest;
     return null;
   },
+  setWake(raw, { enabled, name }) {
+    if (raw.wake !== undefined && !isObject(raw.wake)) throw new Error('Розділ «wake» у settings.json записано неправильно — виправ його вручну.');
+    const wake = raw.wake ?? (raw.wake = {});
+    if (typeof enabled === 'boolean') wake.enabled = enabled;
+    if (name !== undefined) {
+      if (typeof name !== 'string' || !name.trim()) throw new Error('Ім\'я не може бути порожнім');
+      wake.name = name.trim().slice(0, 24);
+    }
+    const want = wake.name;
+    return (config, warnings) => (name === undefined || config.wake.name === want
+      ? null : (warnings.find((w) => w.startsWith('wake.name')) ?? 'Таке ім\'я не годиться.').replace('wake.name: ', '').replace(' — відгук на ім\'я вимкнено', ''));
+  },
   setHotkey(raw, { hotkey }) {
     if (!isValidHotkey(hotkey)) throw new Error('Потрібне сполучення з Ctrl, Alt або Win і однієї клавіші, наприклад Ctrl + Shift + Space');
     raw.hotkey = hotkey;
@@ -183,5 +195,6 @@ export function settingsView(config, warnings = []) {
   const readable = [...READABLE].map((ext) => ({ ext, read: config.readableTypes.has(ext) }));
   return { editable: raw !== null, brokenMessage: raw === null ? BROKEN : null, moreApps: hidden('apps'), moreFolders: hidden('folders'), apps, folders, fileGroups, readable, hotkey: config.hotkey, warnings,
     flags: { speakReplies: !!config.speakReplies, followUp: !!config.followUp, yieldToOtherApps: !!config.yieldToOtherApps },
+    wake: { enabled: !!config.wake?.enabled, name: config.wake?.name ?? '' },
     idleUnloadMinutes: config.idleUnloadMinutes, voice: !!config.speech?.enabled };
 }

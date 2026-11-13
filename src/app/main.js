@@ -19,7 +19,7 @@ import { Resources } from '../agent/resources.js';
 import { nodeOs } from '../tools/util.js';
 import { Speech, VOICE_SCRIPT } from '../speech/client.js';
 import { SentenceSplitter } from '../speech/sentences.js';
-import { finalTail } from '../agent/tone.js';
+import { finalTail, isGoodbye } from '../agent/tone.js';
 import { iconPng } from './icon.js';
 import { Host } from './host.js';
 import { PanelServer } from './server.js';
@@ -73,6 +73,9 @@ let replanAfterTurn = false;   // розподіл відеопам'яті тр�
 let planCountedVoice = false; // останній розподіл відеопам'яті вже врахував місце під якісний голос
 let lastTalker = '';      // яким голосом озвучено попередню відповідь
 let lastTalkEnd = 0;      // коли асистент востаннє замовк
+let wakeWait = null;      // обіцянка поточного очікування імені (мікрофон слухає, доки не назвуть асистента)
+let wakeStopping = 0;     // очікування імені зупиняємо навмисно — самому його не поновлювати
+let wakeRetry = null;
 const pendingConfirms = new Map();
 
 const STATE_LABELS = {
@@ -80,9 +83,10 @@ const STATE_LABELS = {
   confirming: 'Чекає дозволу', speaking: 'Говорить', error: 'Помилка',
 };
 
-const trayTip = () => (resources?.asleep && state === 'idle'
-  ? 'Offgrid — спить, пам\'ять звільнено'
-  : `Offgrid — ${STATE_LABELS[state].toLowerCase()}`);
+const trayTip = () => {
+  const name = wakeWait && state === 'idle' ? ` · відгукнуся на «${config.wake.name}»` : '';
+  return (resources?.asleep && state === 'idle' ? 'Offgrid — спить, пам\'ять звільнено' : `Offgrid — ${STATE_LABELS[state].toLowerCase()}`) + name;
+};
 
 // ---------- Події для панелі ----------
 function send(event) {
@@ -186,6 +190,8 @@ function applyConfig({ announce = false } = {}) {
   syncVoice({ retry: announce });
   resources?.touch();
   rebuildTrayMenu();
+  // ім'я чи сам перемикач могли змінитися: очікування починаємо заново (або зупиняємо)
+  disarmWake().then(armWake);
 
 }
 
@@ -217,6 +223,7 @@ const MENU_ACTIONS = {
   'new-chat': () => newChat(),
   sleep: async () => { if (!(await resources?.sleep('manual'))) send({ type: 'soft', text: 'Зараз заснути не можу: триває розмова або ще щось завантажується. Спробуй за кілька секунд.' }); },
   speak: () => setSpeakReplies(!config.speakReplies),
+  wake: () => { const r = changeSettings('setWake', { enabled: !config.wake.enabled }); if (!r.ok) send({ type: 'notice', text: r.error }); },
   settings: () => { showPanel(); send({ type: 'open-view', view: 'settings' }); },
   log: () => { showPanel(); send({ type: 'open-view', view: 'log' }); },
   'open-settings-file': () => ui.open(SETTINGS_FILE),
@@ -235,6 +242,7 @@ function rebuildTrayMenu() {
       ? { id: 'asleep', label: 'Спить — пам\'ять звільнено', enabled: false }
       : { id: 'sleep', label: 'Звільнити відеопам\'ять (заснути)' },
     { id: 'speak', label: 'Озвучувати відповіді', checked: !!config.speakReplies, enabled: !!config.speech?.enabled },
+    { id: 'wake', label: `Відгукуватись на ім'я «${config.wake.name}»`, checked: !!config.wake.enabled, enabled: !!config.speech?.enabled },
     { separator: true },
     { id: 'settings', label: 'Налаштування…' },
     { id: 'log', label: 'Журнал дій…' },
@@ -251,6 +259,51 @@ function rebuildTrayMenu() {
 // ---------- Голос ----------
 // Говорить якісний голос, якщо його сервіс готовий; інакше — простий голос мовного сервісу (запасний).
 const talker = () => (voice?.ready ? voice : speech);
+
+// ---------- Відгук на ім'я ----------
+// Коли це ввімкнено й асистент нічим не зайнятий, мовний сервіс слухає мікрофон і чекає на ім'я. Сюди
+// приходить лише фраза, в якій ім'я прозвучало; усе інше сервіс викидає сам (див. speech_server.py).
+function armWake() {
+  if (wakeWait || wakeStopping || quitting || SHOT || turnActive || hotkeySuspended) return;
+  if (!config.wake?.enabled || !speech?.ready || speech.listening) return;
+  clearTimeout(wakeRetry);
+  const mine = speech.waitForWake([config.wake.name, ...config.wake.aliases])
+    .catch((e) => ({ error: e.message }))
+    .then((res) => {
+      if (wakeWait === mine) wakeWait = null;
+      wakeChanged();
+      if (quitting || wakeStopping) return;
+      // очікування обірвалося не з нашої волі (напр., «замовкни» скасувало й запис) — поновлюємо
+      if (res.cancelled) { wakeRetry = setTimeout(armWake, 300); return; }
+      if (res.error) {
+        if (speech?.ready) logAction({ tool: 'app', args: {}, decision: 'error', ok: false, error: `Очікування імені обірвалося: ${res.error}` });
+        wakeRetry = setTimeout(armWake, 30_000);
+        return;
+      }
+      if (turnActive) return;
+      startListening({ said: res.text, byName: true });
+    });
+  wakeWait = mine;
+  wakeChanged();
+}
+
+/** Зупинити очікування імені й дочекатися, доки мікрофон справді звільниться. */
+async function disarmWake() {
+  clearTimeout(wakeRetry);
+  const waiting = wakeWait;
+  if (!waiting) return;
+  wakeStopping++;
+  try {
+    await speech.stopWaiting();
+    await waiting;
+  } finally { wakeStopping--; }
+}
+
+function wakeChanged() {
+  if (quitting) return;
+  ui.setTray({ tip: trayTip() });
+  send({ type: 'wake', armed: !!wakeWait, name: config.wake.name });
+}
 
 /** Замовкнути негайно (обидва голоси) і запам'ятати, коли це сталося. */
 function hush() {
@@ -316,6 +369,7 @@ function endTurn() {
   send({ type: 'busy', value: false });
   if (state !== 'error') setState('idle');
   if (!ui.focused) { showPanel({ focus: false }); scheduleAutoHide(); }
+  armWake();
 }
 
 function setSpeakReplies(value) {
@@ -523,13 +577,17 @@ async function startTextTurn(text) {
   send({ type: 'busy', value: true });
   wakeUp();
   let again = false;
-  try { again = await runTurn(text); } finally { endTurn(); }
+  try {
+    await disarmWake(); // під час відповіді мікрофон не слухаємо: асистент не має відгукуватись на власний голос
+    again = await runTurn(text);
+  } finally { endTurn(); }
   if (again && listenNext) startListening();
 }
 
 // Голосова розмова: слухаємо до паузи, показуємо текст наживо, відповідаємо — і, якщо ввімкнено «продовження»,
 // ще кілька секунд слухаємо далі вже без клавіші. Розмова закінчується, коли ти мовчиш.
-async function startListening() {
+// said — фраза, яку вже почуто разом з іменем (тоді перший запис пропускаємо); byName — розмову почато іменем.
+async function startListening({ said = '', byName = false } = {}) {
   if (turnActive) return;
   if (!speech?.ready) {
     showPanel();
@@ -543,6 +601,8 @@ async function startListening() {
   try {
     // Якщо спав — спершу прокидаємось і ділимо відеопам'ять (частки секунди), і лише тоді вмикаємо запис:
     // він одразу повертає розпізнавання на відеокарту, і планувальник мусить це врахувати, а не вгадувати.
+    await disarmWake(); // мікрофон зараз потрібен самому запису
+    if (byName) logAction({ tool: 'app', args: {}, decision: 'auto', ok: true, message: 'Почув своє ім\'я — слухаю' });
     await wakeUp();
     if (turnCancelled) return;
     for (let followUp = false; ; followUp = true) {
@@ -560,7 +620,8 @@ async function startListening() {
       const settle = SETTLE_AFTER_TALK_MS - (Date.now() - lastTalkEnd);
       if (settle > 0) await new Promise((r) => setTimeout(r, settle));
       let heard;
-      try {
+      if (said) { heard = { text: said }; said = ''; }
+      else try {
         heard = await speech.listen((event) => {
           if (event.type === 'partial') send({ type: 'partial', text: event.text });
           else if (event.type === 'speech') { heardSpeech = true; send({ type: 'partial', text: '' }); }
@@ -587,6 +648,11 @@ async function startListening() {
         return;
       }
       send({ type: 'user', text: heard.text });
+      // «повернусь потім», «на цьому все» — розмову закінчено; моделі це не передаємо й далі не слухаємо
+      if (isGoodbye(heard.text)) {
+        send({ type: 'soft', text: config.wake.enabled ? `Гаразд. Назви мене — «${config.wake.name}», — коли знадоблюсь.` : 'Гаразд, я поруч.' });
+        return;
+      }
       if (!(await runTurn(heard.text, { byVoice: true }))) return;
     }
   } finally {
@@ -625,7 +691,7 @@ function changeSettings(change, payload) {
   const result = editSettings(change, payload, TOOL_MODES);
   // у журнал — лише прості поля з відомими назвами
   const args = { change };
-  for (const field of ['key', 'name', 'closable', 'exe', 'dir', 'ext', 'list', 'on', 'hotkey']) {
+  for (const field of ['key', 'name', 'closable', 'exe', 'dir', 'ext', 'list', 'on', 'hotkey', 'enabled']) {
     if (['string', 'boolean'].includes(typeof payload?.[field])) args[field] = payload[field];
   }
   logAction({ tool: 'settings', args, decision: 'user', ok: result.ok, ...(result.ok ? {} : { error: result.error }) });
@@ -665,6 +731,8 @@ async function handleSettings(action, payload) {
   } else if (action === 'setIdleMinutes') {
     result = Number.isInteger(data.minutes) && data.minutes >= 0 && data.minutes <= 240
       ? setOption('idleUnloadMinutes', data.minutes) : { ok: false, error: 'Некоректний час простою' };
+  } else if (action === 'setWake') {
+    result = changeSettings('setWake', { ...(typeof data.on === 'boolean' ? { enabled: data.on } : {}), ...(typeof data.name === 'string' ? { name: data.name } : {}) });
   } else if (action === 'setHotkey') {
     result = await changeHotkey(data.hotkey);
   } else if (SIMPLE_CHANGES.has(action)) {
@@ -680,6 +748,7 @@ const API = {
   ready: async () => ({
     state, busy: turnActive, asleep: !!resources?.asleep, hotkey: activeHotkey, model: config.model, warnings,
     speakReplies: config.speakReplies, voice: { status: speech?.status ?? 'off', error: speech?.error ?? null },
+    wake: { armed: !!wakeWait, name: config.wake.name },
   }),
   ask: async ({ text }) => { if (typeof text === 'string' && text.trim()) startTextTurn(text); return true; },
   listen: async () => { if (state === 'listening') speech.stopListening(); else startListening(); return true; },
@@ -695,7 +764,7 @@ const API = {
   // почало б розмову замість того, щоб потрапити в поле запису
   'capture-hotkey': async ({ on }) => {
     if (on === true && !turnActive) { hotkeySuspended = true; hotkeyRun++; await ui.unregisterHotkey(); }
-    else if (hotkeySuspended) { hotkeySuspended = false; await registerHotkeys(); }
+    else if (hotkeySuspended) { hotkeySuspended = false; await registerHotkeys(); armWake(); }
     return true;
   },
 };
@@ -779,6 +848,7 @@ async function start() {
       // …але якщо сервіс якісного голосу ще вантажиться, чекаємо на нього: посеред завантаження його модель
       // тимчасово лежить у відеопам'яті, і розрахунок вийшов би надто обережним
       if (s.status !== 'starting' && voice?.status !== 'starting') planGpu();
+      if (s.status === 'ready') armWake();
     },
   });
 
@@ -807,7 +877,11 @@ async function start() {
       || speech?.status === 'starting' || voice?.status === 'starting',
     release: async (reason) => {
       await unloadModel(config);
+      // поки розпізнавання слухає ім'я, вивантажитись воно не може: зупиняємо, вивантажуємо й слухаємо знову —
+      // уві сні ім'я чує мала модель на процесорі
+      await disarmWake();
       await speech?.sleep().catch(() => false);
+      armWake();
       // Після простою сервіс голосу лишається запущеним (його модель і так у звичайній пам'яті) — так він
       // прокидається миттєво. Якщо ж пам'ять звільняють навмисно чи для іншої програми, зупиняємо його
       // зовсім: це ще близько 1 ГБ відеопам'яті; після пробудження він запуститься знову за ~20 с.

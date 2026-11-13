@@ -18,6 +18,10 @@
                    {"type":"recognizing"} {"type":"final","text":..}
                    тіло (необов'язково) {"wait_s": 5, "strict": true}: скільки чекати на початок мови;
                    strict — початком мови вважати лише стійкий звук, а не один гучний клац
+  POST /wake-listen -> чекати на ім'я асистента. Тіло {"names": ["офгрід", ...]}; відповідь — потік рядків JSON:
+                   {"type":"listening"} ... {"type":"wake","text":"решта фрази після імені"}
+                   Мікрофон слухає безперервно; кожну почуту фразу розпізнаємо, і якщо імені в ній немає,
+                   текст одразу викидається: він не залишає цей процес, ніде не зберігається й не друкується.
   POST /stop    -> закінчити запис зараз і розпізнати те, що встигли сказати
   POST /cancel  -> скасувати запис без розпізнавання і зупинити озвучення
   POST /say     -> тіло {"text": "речення"}; додає речення до озвучення й одразу повертається
@@ -44,6 +48,7 @@ import sys
 import threading
 import time
 import types
+import difflib
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -83,6 +88,7 @@ WHISPER_MODEL = os.environ.get("OFFGRID_WHISPER_MODEL", "medium")          # о�
 WHISPER_LIVE_MODEL = os.environ.get("OFFGRID_WHISPER_LIVE_MODEL", "small")  # чернетка наживо; "" — вимкнути
 WHISPER_DEVICE = os.environ.get("OFFGRID_WHISPER_DEVICE", "auto").lower()         # auto | cpu | gpu
 WHISPER_GPU_MODEL = os.environ.get("OFFGRID_WHISPER_GPU_MODEL", "large-v3-turbo")
+WAKE_NAME = os.environ.get("OFFGRID_WAKE_NAME", "").strip()   # ім'я асистента — підказка, як його писати
 WHISPER_DIR = os.environ.get("OFFGRID_WHISPER_DIR", r"E:\AI\whisper")
 PIPER_VOICE = Path(os.environ.get("OFFGRID_PIPER_VOICE", r"E:\AI\piper\uk_UA-mykyta-high.onnx"))
 SPEECH_SPEED = float(os.environ.get("OFFGRID_SPEECH_SPEED", "1.0"))  # >1 — повільніше, <1 — швидше
@@ -101,11 +107,16 @@ MIN_THRESHOLD = 0.01       # мінімальний поріг гучності 
 MAX_THRESHOLD = 0.04       # вище не піднімаємо: інакше після шумного старту асистент «оглухне»
 PARTIAL_EVERY_S = 0.8      # як часто оновлювати проміжний текст
 MAX_SPEAK_CHARS = 1500
+WAKE_SILENCE_S = 0.7       # у режимі очікування імені: стільки тиші закінчує фразу
+WAKE_MAX_S = 10            # …і довших фраз не чекаємо
+WAKE_MATCH = 0.78          # наскільки почуте слово має бути схожим на ім'я (1.0 — буква в букву)
 BLOCK = int(SAMPLE_RATE * BLOCK_S)
 
 # Підказка для Whisper: слова, які часто звучать у командах
 INITIAL_PROMPT = ("Команди голосовому асистенту: відкрий, закрий, знайди файл, блокнот, калькулятор, "
                   "Провідник, гучніше, тихіше, вимкни звук, котра година, документи, завантаження, нотатка.")
+if WAKE_NAME:
+    INITIAL_PROMPT += f" Асистента звати {WAKE_NAME}."
 
 
 def log(msg):
@@ -150,6 +161,7 @@ def load_gpu_whisper():
         return None
 
 
+WHISPER_LIVE_MODEL_CPU = WHISPER_LIVE_MODEL or "small"  # нею слухаємо ім'я, коли відеокарта звільнена
 whisper = load_gpu_whisper()
 ON_GPU = whisper is not None
 if ON_GPU:
@@ -309,6 +321,123 @@ class Speculation:
         finally:
             lock.release()
             self.done.set()
+
+
+WAKE_CPU = None            # мала модель на процесорі — слухає ім'я, поки розпізнавання вивантажене з відеокарти
+WAKE_CPU_LOCK = threading.Lock()
+INTERJECTIONS = {"гей", "ей", "агов", "хей", "окей", "ок", "слухай", "привіт"}
+
+
+def _words(text):
+    """Слова фрази: (як написано, спрощений вигляд для порівняння)."""
+    out = []
+    for raw in text.split():
+        norm = "".join(ch for ch in raw.lower() if ch.isalnum())
+        if norm:
+            out.append((raw, norm))
+    return out
+
+
+def match_wake(text, names):
+    """Шукає у фразі ім'я асистента. Повертає (знайдено, решта фрази без імені).
+    Порівняння нестроге: Whisper може написати «Охгрід» чи «Оф грід» — тому дивимось і на пари сусідніх слів."""
+    words = _words(text)
+    targets = ["".join(ch for ch in n.lower() if ch.isalnum()) for n in names]
+    targets = [t for t in targets if len(t) >= 3]
+    for i in range(len(words)):
+        for n in (2, 1):
+            if i + n > len(words):
+                continue
+            cand = "".join(w[1] for w in words[i:i + n])
+            for t in targets:
+                if abs(len(cand) - len(t)) <= 2 and difflib.SequenceMatcher(None, cand, t).ratio() >= WAKE_MATCH:
+                    rest = [w for w in words[:i] + words[i + n:] if not (w[1] in INTERJECTIONS and len(words) - n <= 2)]
+                    command = " ".join(w[0] for w in rest).strip(" ,.!?—-")
+                    return True, command
+    return False, ""
+
+
+def _wake_quick(audio):
+    """Швидке розпізнавання для пошуку імені. Повертає (текст, чи це вже точна модель)."""
+    global WAKE_CPU
+    if ON_GPU and GPU_LOADED:
+        with FINAL_MODELS[0][1]:
+            if GPU_LOADED:  # не будимо модель: якщо її щойно вивантажили — слухаємо на процесорі
+                return _run(whisper, audio, False), True
+    if not ON_GPU and whisper_live is not None:
+        with LIVE_LOCK:
+            return _run(whisper_live, audio, False), False
+    if not ON_GPU:
+        return transcribe(audio), True
+    with WAKE_CPU_LOCK:
+        if WAKE_CPU is None:
+            WAKE_CPU = WhisperModel(WHISPER_LIVE_MODEL_CPU, device="cpu", compute_type="int8", cpu_threads=CPU_THREADS,
+                                    download_root=WHISPER_DIR, local_files_only=True)
+        return _run(WAKE_CPU, audio, False), False
+
+
+def wake_listen(emit, names):
+    """Чекає на ім'я асистента. Фрази без імені викидаються тут же й нікуди не передаються."""
+    if MIC_ERROR:
+        calibrate()
+        if MIC_ERROR:
+            emit({"type": "error", "error": MIC_ERROR})
+            return
+    chunks, started, silence, total, loud = [], False, 0.0, 0.0, 0.0
+    quiet = []
+    pre_roll = deque(maxlen=int((PRE_ROLL_S + STRICT_SPEECH_S) / BLOCK_S))
+    last_alive = time.perf_counter()
+    try:
+        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", blocksize=BLOCK) as stream:
+            emit({"type": "listening"})
+            while True:
+                if CANCEL_LISTEN.is_set() or STOP_LISTEN.is_set():
+                    emit({"type": "cancelled"})
+                    return
+                data, _ = stream.read(BLOCK)
+                rms = float(np.sqrt(np.mean(data ** 2)))
+                if not started:
+                    # початком мови вважаємо лише стійкий звук, а не клац чи стукіт
+                    loud = loud + BLOCK_S if rms > THRESHOLD else max(0.0, loud - BLOCK_S)
+                    if rms > THRESHOLD and loud >= STRICT_SPEECH_S:
+                        started, silence, total = True, 0.0, 0.0
+                        chunks = list(pre_roll)
+                        chunks.append(data.copy())
+                    else:
+                        pre_roll.append(data.copy())
+                        quiet.append(rms)
+                        if len(quiet) >= 1000:   # пів хвилини тиші: уточнюємо поріг під поточний шум
+                            set_threshold(quiet)
+                            quiet = []
+                        if time.perf_counter() - last_alive > 15:
+                            last_alive = time.perf_counter()
+                            emit({"type": "alive"})  # заодно помітимо, якщо застосунок зник
+                    continue
+                chunks.append(data.copy())
+                total += BLOCK_S
+                silence = silence + BLOCK_S if rms < THRESHOLD else 0.0
+                if silence < WAKE_SILENCE_S and total < WAKE_MAX_S:
+                    continue
+                audio = np.concatenate(chunks).flatten()
+                spoken = total - silence
+                chunks, started, loud = [], False, 0.0
+                pre_roll.clear()
+                if spoken < 0.3:
+                    continue
+                text, accurate = _wake_quick(audio)
+                found, command = match_wake(text, names)
+                del text                          # фраза без імені далі не йде
+                if not found:
+                    continue
+                if not accurate:
+                    # ім'я почула мала модель; саму команду розпізнаємо точною (для цього вона повертається на відеокарту)
+                    better = transcribe(audio)
+                    ok, cmd = match_wake(better, names)
+                    command = cmd if ok else better.strip(" ,.!?")
+                emit({"type": "wake", "text": command, "gpu_loaded": bool(ON_GPU and GPU_LOADED)})
+                return
+    except Exception as e:  # noqa: BLE001
+        emit({"type": "error", "error": f"Не вдалося слухати мікрофон: {e}"})
 
 
 def listen(emit, wait_s=WAIT_FOR_SPEECH_S, strict=False):
@@ -474,11 +603,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._json(200, {"ok": True, "device": "gpu" if ON_GPU else "cpu", "gpu_loaded": GPU_LOADED, "whisper": WHISPER_MODEL,
                              "live": WHISPER_MODEL if ON_GPU else (WHISPER_LIVE_MODEL if whisper_live else None),
-                             "ahead": len(FINAL_MODELS) > 1, "voice": PIPER_VOICE.stem, "mic_error": MIC_ERROR})
+                             "ahead": len(FINAL_MODELS) > 1, "voice": PIPER_VOICE.stem, "mic_error": MIC_ERROR,
+                             "listening": LISTEN_LOCK.locked()})
         else:
             self._json(404, {"ok": False, "error": "not found"})
 
-    def _listen_stream(self, wait_s, strict):
+    def _listen_stream(self, work):
         if not LISTEN_LOCK.acquire(blocking=False):
             return self._json(409, {"ok": False, "error": "Я вже слухаю"})
         try:
@@ -509,7 +639,7 @@ class Handler(BaseHTTPRequestHandler):
                     except OSError:
                         CANCEL_LISTEN.set()  # клієнт від'єднався — запис більше нікому не потрібен
 
-            listen(emit, wait_s, strict)
+            work(emit)
         finally:
             STOP_LISTEN.clear()
             CANCEL_LISTEN.clear()
@@ -524,7 +654,13 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/listen":
                 wait_s = data.get("wait_s", WAIT_FOR_SPEECH_S)
                 wait_s = float(wait_s) if isinstance(wait_s, (int, float)) and not isinstance(wait_s, bool) else WAIT_FOR_SPEECH_S
-                self._listen_stream(min(15.0, max(2.0, wait_s)), data.get("strict") is True)
+                wait_s, strict = min(15.0, max(2.0, wait_s)), data.get("strict") is True
+                self._listen_stream(lambda emit: listen(emit, wait_s, strict))
+            elif self.path == "/wake-listen":
+                names = [str(n)[:40] for n in data.get("names", []) if isinstance(n, str)][:8]
+                if not any(len("".join(ch for ch in n if ch.isalnum())) >= 3 for n in names):
+                    return self._json(400, {"ok": False, "error": "Не задано ім'я асистента"})
+                self._listen_stream(lambda emit: wake_listen(emit, names))
             elif self.path == "/wake":
                 # повернути розпізнавання на відеокарту заздалегідь (у фоні), щоб наступний запис не чекав
                 if ON_GPU and not GPU_LOADED:

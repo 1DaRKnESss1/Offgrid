@@ -22,7 +22,7 @@ export const OPENABLE = new Set(FILE_TYPE_GROUPS.flatMap((g) => g.types));
 // Читати вміст можна лише з простих текстових форматів
 export const READABLE = new Set(['.txt', '.md', '.csv', '.log', '.json', '.xml', '.ini', '.yml', '.yaml']);
 const CONFIRM_MODES = ['never', 'content', 'tainted', 'always'];
-const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'speakReplies', 'followUp', 'gpuLayers', 'idleUnloadMinutes', 'yieldToOtherApps', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'confirm']);
+const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'speakReplies', 'followUp', 'wake', 'gpuLayers', 'idleUnloadMinutes', 'yieldToOtherApps', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'confirm']);
 
 const WINDIR = process.env.SystemRoot ?? 'C:\\Windows';
 
@@ -199,6 +199,19 @@ export function validateConfig(raw, defaults, toolModes = null) {
   // після відповіді голосом кілька секунд слухати продовження без клавіші
   cfg.followUp = typeof raw.followUp === 'boolean' ? raw.followUp : defaults.followUp === true;
   // голос — не білий список: якщо розділу в файлі користувача немає, беремо типовий
+  // Відгук на ім'я: мікрофон слухає постійно, розмова починається, коли хтось назве асистента.
+  // За замовчуванням вимкнено: вмикати це має сам користувач.
+  const NAME = /^[\p{L}\p{N}][\p{L}\p{N} '’-]{1,23}$/u;
+  const w = isObject(raw.wake) ? raw.wake : {};
+  if (raw.wake !== undefined && !isObject(raw.wake)) warn('wake записано неправильно — відгук на ім\'я вимкнено');
+  cfg.wake = { enabled: w.enabled === true, name: defaults.wake?.name ?? 'Офгрід', aliases: [] };
+  if (w.name !== undefined) {
+    if (typeof w.name === 'string' && NAME.test(w.name.trim()) && w.name.replace(/[^\p{L}\p{N}]/gu, '').length >= 3) cfg.wake.name = w.name.trim();
+    else { warn('wake.name: ім\'я має бути словом із 3–24 літер — відгук на ім\'я вимкнено'); cfg.wake.enabled = false; }
+  }
+  for (const alias of Array.isArray(w.aliases) ? w.aliases.slice(0, 6) : (w.aliases === undefined ? defaults.wake?.aliases ?? [] : [])) {
+    if (typeof alias === 'string' && NAME.test(alias.trim())) cfg.wake.aliases.push(alias.trim());
+  }
   // скільки шарів моделі класти на відеокарту: "auto" — підібрати під вільну відеопам'ять, або число 0–99
   cfg.gpuLayers = 'auto';
   if (raw.gpuLayers !== undefined && raw.gpuLayers !== 'auto') {
@@ -214,6 +227,8 @@ export function validateConfig(raw, defaults, toolModes = null) {
   // звільняти відеопам'ять, коли її бракує іншій програмі (наприклад, запущено гру)
   cfg.yieldToOtherApps = typeof raw.yieldToOtherApps === 'boolean' ? raw.yieldToOtherApps : defaults.yieldToOtherApps !== false;
   cfg.speech = validateSpeech(raw.speech === undefined ? defaults.speech : raw.speech, warn, defaults.speech?.voice);
+  // ім'я підказує розпізнаванню, як його писати (навіть коли відгук на ім'я вимкнено — у розмові його теж називають)
+  if (cfg.speech.enabled) cfg.speech.wakeName = cfg.wake.name;
 
   // Білі списки: якщо розділу немає або він не того типу — список ПОРОЖНІЙ, а не типовий
   const section = (key, check, empty) => {
