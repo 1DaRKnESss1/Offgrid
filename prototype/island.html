@@ -4,24 +4,44 @@
 <meta charset="utf-8">
 <title>Offgrid island prototype</title>
 <style>
-  :root { --key: rgb(2, 3, 5); --ink: #0c0c0e; --text: #f2f2f5; --muted: #9a9aa5; --accent: #5aa9ff; }
+  @property --a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+  :root { --text: #f2f2f5; --muted: #9a9aa5; --c1: #5aa9ff; --c2: #b08cff; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none;
     font: 13px/1.35 "Segoe UI Variable Text", "Segoe UI", sans-serif; color: var(--text); }
-  body { display: flex; justify-content: center; align-items: flex-start; padding-top: 10px; }
+  body { display: flex; justify-content: center; align-items: flex-start; padding-top: 8px; }
 
+  /* The outer element is the moving rim; the inner one is the glass body. */
   #island {
-    width: 150px; height: 36px; border-radius: 18px; background: var(--ink);
+    width: 150px; height: 36px; border-radius: 18px; padding: 1.5px; position: relative; cursor: default;
     transition: width .42s cubic-bezier(.3, 1.35, .45, 1), height .42s cubic-bezier(.3, 1.35, .45, 1), border-radius .42s ease;
-    overflow: hidden; position: relative; cursor: grab;
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .07), 0 6px 22px rgba(0, 0, 0, .45);
-    -webkit-app-region: drag; app-region: drag;
+    background: conic-gradient(from var(--a), rgba(255,255,255,.16), rgba(255,255,255,.04) 30%, rgba(255,255,255,.16) 55%, rgba(255,255,255,.04) 80%, rgba(255,255,255,.16));
+    animation: spin 9s linear infinite;
   }
-  #island[data-s="listening"] { width: 320px; height: 44px; border-radius: 22px; }
-  #island[data-s="thinking"]  { width: 210px; height: 36px; }
-  #island[data-s="speaking"]  { width: 380px; height: 64px; border-radius: 26px; }
-  #island[data-s="confirm"]   { width: 380px; height: 118px; border-radius: 28px; }
-  #island[data-s="open"]      { width: 400px; height: 300px; border-radius: 30px; }
+  #island:not([data-s="idle"]) {
+    background: conic-gradient(from var(--a), var(--c1), transparent 22%, transparent 45%, var(--c2) 62%, transparent 82%, var(--c1));
+    animation-duration: 2.6s;
+  }
+  @keyframes spin { to { --a: 360deg; } }
+  #island[data-s="listening"] { --c1: #ff5d6c; --c2: #ffa24a; width: 320px; height: 44px; border-radius: 22px; }
+  #island[data-s="thinking"]  { --c1: #ffc24a; --c2: #ff7ad9; width: 210px; height: 36px; animation-duration: 1.5s; }
+  #island[data-s="speaking"]  { --c1: #5aa9ff; --c2: #5ff0d0; width: 380px; height: 64px; border-radius: 26px; }
+  #island[data-s="confirm"]   { --c1: #ffb347; --c2: #ffe08a; width: 380px; height: 118px; border-radius: 28px; }
+  #island[data-s="open"]      { --c1: #5aa9ff; --c2: #b08cff; width: 400px; height: 300px; border-radius: 30px; animation-duration: 7s; }
+
+  #core {
+    position: absolute; inset: 1.5px; border-radius: inherit; overflow: hidden;
+    background:
+      radial-gradient(120% 90% at 50% -30%, color-mix(in srgb, var(--c1) 22%, transparent), transparent 60%),
+      linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,0) 42%),
+      rgba(13, 13, 16, .93);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.10), inset 0 -10px 18px rgba(0,0,0,.35);
+  }
+  #island[data-s="idle"] #core { background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,0) 45%), rgba(13, 13, 16, .93); }
+  /* a slow sheen that crosses the glass now and then */
+  #core::after { content: ""; position: absolute; top: 0; bottom: 0; width: 60px; left: -80px; transform: skewX(-20deg);
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,.07), transparent); animation: sheen 6s ease-in-out infinite; }
+  @keyframes sheen { 0%, 70% { left: -80px; } 100% { left: 110%; } }
 
   .row { position: absolute; inset: 0; display: flex; align-items: center; gap: 10px; padding: 0 14px;
     opacity: 0; transition: opacity .18s ease; pointer-events: none; white-space: nowrap; }
@@ -30,40 +50,35 @@
     { opacity: 1; transition: opacity .25s ease .16s; pointer-events: auto; }
 
   .dot { width: 9px; height: 9px; border-radius: 50%; background: #6b6b76; flex: none; }
-  .listening .dot { background: #ff5d5d; animation: pulse 1.1s ease-in-out infinite; }
-  .thinking .dot { background: #ffc24a; animation: pulse .8s ease-in-out infinite; }
-  .speaking .dot { background: var(--accent); }
-  @keyframes pulse { 50% { transform: scale(1.5); opacity: .6; } }
+  .listening .dot, .thinking .dot { background: var(--c1); box-shadow: 0 0 10px var(--c1); animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 50% { transform: scale(1.45); opacity: .6; } }
   .name { font-weight: 600; letter-spacing: .2px; }
   .muted { color: var(--muted); }
   .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; }
 
   .wave { display: flex; align-items: center; gap: 3px; height: 22px; flex: none; }
-  .wave i { width: 3px; border-radius: 2px; background: #ff7b7b; animation: wave 0.9s ease-in-out infinite; }
-  .speaking .wave i { background: var(--accent); }
+  .wave i { width: 3px; border-radius: 2px; background: linear-gradient(var(--c2), var(--c1)); animation: wave 0.9s ease-in-out infinite; }
   .wave i:nth-child(1) { animation-delay: -.8s } .wave i:nth-child(2) { animation-delay: -.55s }
   .wave i:nth-child(3) { animation-delay: -.3s } .wave i:nth-child(4) { animation-delay: -.65s }
   .wave i:nth-child(5) { animation-delay: -.1s }
   @keyframes wave { 0%, 100% { height: 4px } 50% { height: 20px } }
 
-  .speaking { align-items: center; white-space: normal; }
+  .speaking { white-space: normal; }
   .speaking .grow { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .confirm, .open { flex-direction: column; align-items: stretch; justify-content: center; white-space: normal; padding: 14px 18px; }
   .confirm b { font-size: 13.5px; }
   .buttons { display: flex; gap: 8px; margin-top: 4px; }
-  button { -webkit-app-region: no-drag; app-region: no-drag; flex: 1; font: inherit; color: var(--text); background: #25252b;
-    border: 0; border-radius: 12px; padding: 8px 10px; cursor: pointer; }
-  button.primary { background: var(--accent); color: #06121f; font-weight: 600; }
+  button { flex: 1; font: inherit; color: var(--text); background: rgba(255,255,255,.08); border: 0; border-radius: 12px; padding: 8px 10px; cursor: pointer; }
+  button.primary { background: linear-gradient(135deg, var(--c1), var(--c2)); color: #1b1203; font-weight: 600; }
   button:hover { filter: brightness(1.15); }
   .open { justify-content: flex-start; gap: 8px; }
-  .bubble { align-self: flex-start; background: #1d1d22; border-radius: 14px; padding: 7px 11px; max-width: 85%; }
-  .bubble.me { align-self: flex-end; background: #1f4f80; }
-  .field { margin-top: auto; background: #1d1d22; border-radius: 14px; padding: 9px 12px; color: var(--muted); }
-  #hud { position: fixed; left: 0; right: 0; bottom: 6px; text-align: center; font-size: 11px; color: #55555e; }
+  .bubble { align-self: flex-start; background: rgba(255,255,255,.07); border-radius: 14px; padding: 7px 11px; max-width: 85%; }
+  .bubble.me { align-self: flex-end; background: linear-gradient(135deg, #2b6cb0, #5b47c9); }
+  .field { margin-top: auto; background: rgba(255,255,255,.07); border-radius: 14px; padding: 9px 12px; color: var(--muted); }
 </style>
 </head>
 <body>
-<div id="island" data-s="idle">
+<div id="island" data-s="idle"><div id="core">
   <div class="row idle"><span class="dot"></span><span class="name">Offgrid</span><span class="muted grow" id="fps"></span></div>
   <div class="row listening"><span class="dot"></span><span class="wave"><i></i><i></i><i></i><i></i><i></i></span><span class="grow">vidkryi bloknot i zapyshy...</span></div>
   <div class="row thinking"><span class="dot"></span><span class="grow">Dumaiu...</span></div>
@@ -72,39 +87,54 @@
     <div class="buttons"><button>Ni</button><button class="primary">Dozvolyty</button></div></div>
   <div class="row open"><div class="bubble me">kotra hodyna</div><div class="bubble">Zaraz chetverta hodyna dvadtsiat khvylyn.</div>
     <div class="field">Napyshy abo skazhy komandu...</div></div>
-</div>
+</div></div>
 <script>
-  // Demo: the island walks through its states by itself; a click toggles the open panel.
+  // Demo: the island walks through its states by itself until you click it; a click opens / closes the panel.
   const island = document.getElementById('island');
-  const order = ['idle', 'listening', 'thinking', 'speaking', 'idle', 'confirm', 'idle', 'open'];
+  const host = window.chrome?.webview;
+  const order = ['idle', 'listening', 'thinking', 'speaking', 'idle', 'confirm', 'idle'];
   let i = 0, manual = false;
-  const auto = new URLSearchParams(location.search).get('auto') !== '0';
   const forced = new URLSearchParams(location.search).get('s');
-  if (forced) island.dataset.s = forced;
-  else if (auto) setInterval(() => { if (!manual) island.dataset.s = order[++i % order.length]; }, 2200);
-  island.addEventListener('dblclick', () => { manual = true; island.dataset.s = island.dataset.s === 'open' ? 'idle' : 'open'; });
-  // Tell the host which part of the window is really occupied (island + room for its shadow).
-  // Growing: claim the bigger box at once. Shrinking: give the space back only when the animation is over.
-  const SIZES = { idle: [150, 36], listening: [320, 44], thinking: [210, 36], speaking: [380, 64], confirm: [380, 118], open: [400, 300] };
+  if (forced) { island.dataset.s = forced; manual = true; }
+  setInterval(() => { if (!manual) island.dataset.s = order[++i % order.length]; }, 2400);
+
+  // Drag by hand: a press that moves more than a few pixels becomes a window move, otherwise it is a click.
+  let press = null;
+  island.addEventListener('mousedown', (e) => { if (e.button === 0 && !e.target.closest('button')) press = { x: e.screenX, y: e.screenY }; });
+  window.addEventListener('mousemove', (e) => {
+    if (press && Math.hypot(e.screenX - press.x, e.screenY - press.y) > 4) { press = null; host?.postMessage({ t: 'drag' }); }
+  });
+  window.addEventListener('mouseup', (e) => {
+    if (!press) return;
+    press = null;
+    if (e.target.closest('button')) return;
+    manual = true;
+    island.dataset.s = island.dataset.s === 'open' ? 'idle' : 'open';
+  });
+
+  // Tell the host which part of the window the island really occupies; the rest is cut away, so clicks there
+  // reach whatever is underneath. Growing: claim the bigger shape at once. Shrinking: give it back afterwards.
+  const SIZES = { idle: [150, 36, 18], listening: [320, 44, 22], thinking: [210, 36, 18], speaking: [380, 64, 26], confirm: [380, 118, 28], open: [400, 300, 30] };
   let box = [0, 0], shrink = null;
-  function post(w, h) {
+  function post(w, h, r, pad) {
     box = [w, h];
-    const pad = 24, vw = document.documentElement.clientWidth;
-    window.chrome?.webview?.postMessage({ t: 'box', x: Math.round((vw - w) / 2) - pad, y: 0, w: w + pad * 2, h: h + 10 + pad * 1.5 });
+    const vw = document.documentElement.clientWidth;
+    host?.postMessage({ t: 'box', x: Math.round((vw - w) / 2) - pad, y: 8 - pad, w: w + pad * 2, h: h + pad * 2, r: r + pad });
   }
   function claim() {
-    const [w, h] = SIZES[island.dataset.s];
+    const [w, h, r] = SIZES[island.dataset.s];
     clearTimeout(shrink);
-    post(Math.max(w, box[0]) + 16, Math.max(h, box[1]) + 16); // +16: the spring overshoots a little
-    shrink = setTimeout(() => post(w, h), 520);
+    post(Math.max(w, box[0]), Math.max(h, box[1]), r, 12); // generous while the spring overshoots
+    shrink = setTimeout(() => post(w, h, r, 3), 560);
   }
   new MutationObserver(claim).observe(island, { attributes: true, attributeFilter: ['data-s'] });
   claim();
+
   // frame-rate meter: tells whether the animation is smooth
   let frames = 0, last = performance.now();
   (function tick(now) {
     frames++;
-    if (now - last >= 1000) { document.getElementById('fps').textContent = frames + ' fps'; window.chrome?.webview?.postMessage({ t: 'fps', v: frames }); frames = 0; last = now; }
+    if (now - last >= 1000) { document.getElementById('fps').textContent = frames + ' fps'; host?.postMessage({ t: 'fps', v: frames }); frames = 0; last = now; }
     requestAnimationFrame(tick);
   })(last);
 </script>

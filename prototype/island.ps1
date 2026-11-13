@@ -25,6 +25,12 @@ public static class Glass {
         return DwmEnableBlurBehindWindow(hWnd, ref bb);
     }
 }
+public static class Mover {
+    [DllImport("user32.dll")] static extern bool ReleaseCapture();
+    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr w, IntPtr l);
+    // Hands the pressed mouse button over to Windows as if the title bar had been grabbed
+    public static void Drag(IntPtr hWnd) { ReleaseCapture(); SendMessage(hWnd, 0xA1, (IntPtr)2, IntPtr.Zero); }
+}
 public class IslandForm : Form {
     protected override CreateParams CreateParams {
         get { CreateParams cp = base.CreateParams; cp.ExStyle |= 0x80; return cp; } // WS_EX_TOOLWINDOW
@@ -38,6 +44,7 @@ $form.Text = "Offgrid island"
 $form.FormBorderStyle = "None"
 $form.TopMost = $true
 $form.ShowInTaskbar = $false
+$form.MaximizeBox = $false
 $form.StartPosition = "Manual"
 $form.Size = New-Object System.Drawing.Size($Width, $Height)
 $form.BackColor = [System.Drawing.Color]::Black
@@ -59,7 +66,6 @@ $wv.add_CoreWebView2InitializationCompleted({
   param($s, $e)
   if (-not $e.IsSuccess) { Write-Host "WebView2 failed: $($e.InitializationException.Message)"; [System.Windows.Forms.Application]::ExitThread(); return }
   $set = $wv.CoreWebView2.Settings
-  try { $set.IsNonClientRegionSupportEnabled = $true; Write-Host "drag regions: supported" } catch { Write-Host "drag regions: NOT supported by this WebView2 SDK" }
   $set.AreDefaultContextMenusEnabled = $false
   # The page reports the box its island occupies; everything outside it stops being part of the window,
   # so clicks there go to whatever is underneath.
@@ -69,9 +75,16 @@ $wv.add_CoreWebView2InitializationCompleted({
       $m = $e2.WebMessageAsJson | ConvertFrom-Json
       if ($m.t -eq 'box') {
         $k = $form.DeviceDpi / 96.0
+        $x = [int]($m.x * $k); $y = [int]($m.y * $k); $w = [int]($m.w * $k); $h = [int]($m.h * $k); $d = [int]([Math]::Min($m.r * 2 * $k, [Math]::Min($w, $h)))
+        $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+        $path.AddArc($x, $y, $d, $d, 180, 90); $path.AddArc($x + $w - $d, $y, $d, $d, 270, 90)
+        $path.AddArc($x + $w - $d, $y + $h - $d, $d, $d, 0, 90); $path.AddArc($x, $y + $h - $d, $d, $d, 90, 90)
+        $path.CloseFigure()
         $old = $form.Region
-        $form.Region = New-Object System.Drawing.Region((New-Object System.Drawing.Rectangle([int]($m.x * $k), [int]($m.y * $k), [int]($m.w * $k), [int]($m.h * $k))))
+        $form.Region = New-Object System.Drawing.Region($path)
+        $path.Dispose()
         if ($old) { $old.Dispose() }
+      } elseif ($m.t -eq 'drag') { [Mover]::Drag($form.Handle)
       } elseif ($m.t -eq 'fps') { Write-Host "fps: $($m.v)" }
     } catch { Write-Host "message error: $($_.Exception.Message)" }
   })
