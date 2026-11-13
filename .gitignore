@@ -46,3 +46,7 @@ speech/vendor/
 
 # Окреме Python-середовище для якісного голосу (PyTorch + OmniVoice, кілька ГБ)
 speech/tts-env/
+
+# Бібліотеки WebView2 (ставляться скриптом scripts/setup-webview2.ps1) і дані вікна
+shell/webview2/
+shell/.webview2-download/

@@ -1,10 +1,12 @@
-// Головний процес Offgrid: трей, панель, гаряча клавіша, зв'язок панелі з агентом.
-import { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, nativeImage, screen, shell, session, dialog } from 'electron';
+// Головний процес Offgrid: уся логіка застосунку. Вікно, трей і гарячу клавішу тримає окрема нативна
+// оболонка (shell/host.ps1, керування — host.js), а панель спілкується з цим процесом через локальний
+// сервер (server.js). Раніше все це робив Electron; від нього відмовились, бо Smart App Control блокує
+// його непідписаний файл.
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
-import { ROOT, DATA_DIR, ELECTRON_DATA, SETTINGS_FILE, LOG_FILE, NOTES_DIR } from '../paths.js';
+import { DATA_DIR, SETTINGS_FILE, LOG_FILE, NOTES_DIR } from '../paths.js';
 import { loadConfig, saveSetting } from '../security/config.js';
 import { TOOL_MODES } from '../security/policy.js';
 import { logAction, readLog } from '../security/log.js';
@@ -18,11 +20,10 @@ import { Speech, VOICE_SCRIPT } from '../speech/client.js';
 import { SentenceSplitter } from '../speech/sentences.js';
 import { finalTail } from '../agent/tone.js';
 import { iconPng } from './icon.js';
+import { Host } from './host.js';
+import { PanelServer } from './server.js';
 
-const INDEX_HTML = path.join(ROOT, 'src', 'renderer', 'index.html');
-const INDEX_URL = pathToFileURL(INDEX_HTML).toString();
-const PRELOAD = path.join(ROOT, 'src', 'preload', 'preload.cjs');
-const WIDTH = 400, HEIGHT = 540, MARGIN = 12;
+const WIDTH = 400, HEIGHT = 540;
 const CONFIRM_TIMEOUT_MS = 60_000;
 const AUTO_HIDE_MS = 9_000;
 const ERROR_SHOWN_MS = 5_000;
@@ -39,20 +40,14 @@ const FOLLOW_UP_WAIT_S = 5; // скільки чекати на продовже
 const MAX_FOLLOW_UPS = 4;
 const FALLBACK_HOTKEYS = ['Control+Shift+Space', 'Alt+Shift+Space', 'Control+Alt+O'];
 const SHOT = process.env.OFFGRID_SHOT; // лише для розробки: зберегти знімок панелі й вийти
+// Одна копія застосунку: друга лише просить першу показати панель і виходить
+// (режим знімка для розробки має власний канал і папку, щоб не конфліктувати із запущеним застосунком)
+const INSTANCE_PIPE = `\\\\.\\pipe\\offgrid-${SHOT ? 'dev' : 'app'}`;
+const WEBVIEW_DATA = path.join(DATA_DIR, SHOT ? 'webview2-dev' : 'webview2');
 
-// Службові дані Electron теж тримаємо всередині проєкту, а не в %APPDATA%
-// (режим знімка для розробки має власну папку, щоб не конфліктувати із запущеним застосунком)
-const USER_DATA = SHOT ? `${ELECTRON_DATA}-dev` : ELECTRON_DATA;
-fs.mkdirSync(USER_DATA, { recursive: true });
-app.setPath('userData', USER_DATA);
-// Відеопам'яті впритул через модель — панель малюється на процесорі
-if (!SHOT) app.disableHardwareAcceleration();
-app.setAppUserModelId('local.offgrid.assistant');
-
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) app.quit();
-
-let win = null, tray = null, agent = null;
+const ui = new Host();
+let server = null;
+let agent = null;
 let config = null, warnings = [];
 let state = 'idle';
 let hideTimer = null;
@@ -91,38 +86,29 @@ const trayTip = () => (resources?.asleep && state === 'idle'
 
 // ---------- Події для панелі ----------
 function send(event) {
-  if (win && !win.isDestroyed()) win.webContents.send('offgrid:event', event);
+  server?.broadcast(event);
 }
 
 function setState(next) {
   if (state === next) return;
   state = next;
   send({ type: 'state', state });
-  if (tray) {
-    tray.setImage(nativeImage.createFromBuffer(iconPng(state), { scaleFactor: 2 }));
-    tray.setToolTip(trayTip());
-  }
+  ui.setTray({ icon: iconPng(state), tip: trayTip() });
 }
 
 // ---------- Панель ----------
-function placeWindow() {
-  const area = screen.getPrimaryDisplay().workArea;
-  win.setBounds({ x: area.x + area.width - WIDTH - MARGIN, y: area.y + area.height - HEIGHT - MARGIN, width: WIDTH, height: HEIGHT });
-}
-
 function showPanel({ focus = true } = {}) {
   clearTimeout(hideTimer);
-  placeWindow();
-  if (focus) { win.show(); win.focus(); send({ type: 'focus-input' }); } else if (!win.isVisible()) win.showInactive();
+  if (focus) { ui.show({ focus: true }); send({ type: 'focus-input' }); } else if (!ui.visible) ui.show({ focus: false });
 }
 
 function hidePanel() {
   clearTimeout(hideTimer);
-  if (win?.isVisible()) win.hide();
+  if (ui.visible) ui.hide();
 }
 
 function togglePanel() {
-  if (win.isVisible() && win.isFocused()) hidePanel(); else showPanel();
+  if (ui.visible && ui.focused) hidePanel(); else showPanel();
 }
 
 // Гаряча клавіша: з голосом — «говорити / досить / замовкни», без голосу — показати або сховати панель
@@ -143,40 +129,15 @@ function onHotkey() {
 function scheduleAutoHide() {
   clearTimeout(hideTimer);
   hideTimer = setTimeout(() => {
-    if (win?.isVisible() && !win.isFocused() && (state === 'idle' || state === 'error') && pendingConfirms.size === 0 && !dialogOpen) win.hide();
+    if (ui.visible && !ui.focused && (state === 'idle' || state === 'error') && pendingConfirms.size === 0 && !dialogOpen) ui.hide();
   }, AUTO_HIDE_MS);
 }
 
-function createWindow() {
-  win = new BrowserWindow({
-    width: WIDTH, height: HEIGHT,
-    show: false, frame: false, resizable: false, maximizable: false, minimizable: false, fullscreenable: false,
-    skipTaskbar: true, alwaysOnTop: true,
-    backgroundColor: '#202020',
-    title: 'Offgrid',
-    webPreferences: {
-      preload: PRELOAD,
-      contextIsolation: true,
-      sandbox: true,
-      nodeIntegration: false,
-      webSecurity: true,
-      spellcheck: false,
-      devTools: !!process.env.OFFGRID_DEVTOOLS,
-    },
-  });
-  win.setMenu(null);
-  // Панель показує лише власну локальну сторінку: жодних переходів, нових вікон чи дозволів
-  win.webContents.on('will-navigate', (e) => e.preventDefault());
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  win.on('blur', () => {
-    // панель втратила фокус посеред запису нової клавіші — повертаємо гарячу клавішу на місце
-    if (hotkeySuspended) { hotkeySuspended = false; applyConfig(); send({ type: 'capture-end' }); }
-    if ((state === 'idle' || state === 'error') && pendingConfirms.size === 0 && !dialogOpen && !SHOT) hidePanel();
-  });
-  win.on('close', (e) => {
-    if (!quitting) { e.preventDefault(); hidePanel(); }
-  });
-  win.loadFile(INDEX_HTML);
+// Панель втратила фокус: ховаємо її, якщо вона зараз не потрібна
+function onBlur() {
+  // …а якщо це сталося посеред запису нової клавіші — повертаємо гарячу клавішу на місце
+  if (hotkeySuspended) { hotkeySuspended = false; registerHotkeys(); send({ type: 'capture-end' }); }
+  if ((state === 'idle' || state === 'error') && pendingConfirms.size === 0 && !dialogOpen && !SHOT) hidePanel();
 }
 
 // ---------- Підтвердження небезпечних дій ----------
@@ -213,16 +174,7 @@ function applyConfig({ announce = false } = {}) {
   warnings = loaded.warnings;
   agent?.setConfig(config);
 
-  // Якщо обрана клавіша зайнята іншою програмою, беремо першу вільну із запасних і чесно про це кажемо
-  globalShortcut.unregisterAll();
-  activeHotkey = null;
-  for (const key of [config.hotkey, ...FALLBACK_HOTKEYS.filter((k) => k !== config.hotkey)]) {
-    let ok = false;
-    try { ok = globalShortcut.register(key, onHotkey); } catch { ok = false; }
-    if (ok) { activeHotkey = key; break; }
-  }
-  if (!activeHotkey) warnings.push(`Гарячу клавішу «${config.hotkey}» не вдалося зареєструвати. Відкривай панель клацанням по іконці в треї або зміни hotkey у налаштуваннях`);
-  else if (activeHotkey !== config.hotkey) warnings.push(`Клавіша «${config.hotkey}» зайнята іншою програмою, тому зараз працює «${activeHotkey}». Змінити можна в налаштуваннях (hotkey)`);
+  registerHotkeys({ announce }); // відповідь оболонки прийде за мить — список зауваг вона доповнить сама
 
   // мовний сервіс перезапускаємо лише тоді, коли змінилися саме його налаштування
   const key = JSON.stringify(config.speech);
@@ -235,41 +187,65 @@ function applyConfig({ announce = false } = {}) {
   resources?.touch();
   rebuildTrayMenu();
 
-  // при старті панель сама забирає це через offgrid:ready
-  if (announce) {
-    send({ type: 'notice', text: warnings.length ? 'Налаштування перечитано, є зауваги:' : 'Налаштування перечитано.' });
-    send({ type: 'config', hotkey: activeHotkey, model: config.model, speakReplies: config.speakReplies, warnings });
+}
+
+// Реєструє гарячу клавішу. Якщо обрана зайнята іншою програмою, бере першу вільну із запасних і чесно про це каже.
+let hotkeyRun = 0;
+async function registerHotkeys({ announce = false, only = null } = {}) {
+  const run = ++hotkeyRun; // якщо тим часом почали реєструвати знову — ця спроба застаріла
+  const wanted = only ?? config.hotkey;
+  let found = null;
+  for (const key of only ? [only] : [wanted, ...FALLBACK_HOTKEYS.filter((k) => k !== wanted)]) {
+    if (await ui.registerHotkey(key)) { found = key; break; }
+    if (run !== hotkeyRun) return found;
   }
+  if (run !== hotkeyRun) return found;
+  if (only) return found; // пробна реєстрація: стан не чіпаємо, рішення за тим, хто питав
+  activeHotkey = found;
+  warnings = warnings.filter((w) => !w.startsWith('Гарячу клавішу') && !w.startsWith('Клавіша «'));
+  if (!found) warnings.push(`Гарячу клавішу «${wanted}» не вдалося зареєструвати. Відкривай панель клацанням по іконці в треї або зміни її в налаштуваннях`);
+  else if (found !== wanted) warnings.push(`Клавіша «${wanted}» зайнята іншою програмою, тому зараз працює «${found}». Змінити можна в налаштуваннях`);
+  if (announce) send({ type: 'notice', text: warnings.length ? 'Налаштування перечитано, є зауваги:' : 'Налаштування перечитано.' });
+  send({ type: 'config', hotkey: activeHotkey, model: config.model, speakReplies: config.speakReplies, warnings: announce ? warnings : [] });
+  return found;
 }
 
 // ---------- Трей ----------
-function createTray() {
-  tray = new Tray(nativeImage.createFromBuffer(iconPng('idle'), { scaleFactor: 2 }));
-  tray.setToolTip('Offgrid — очікує');
-  tray.on('click', togglePanel);
-  rebuildTrayMenu();
-}
+// Пункти меню трею: назва -> дія. Саме меню малює оболонка, сюди повертається лише назва натиснутого пункту.
+const MENU_ACTIONS = {
+  show: () => showPanel(),
+  'new-chat': () => newChat(),
+  sleep: () => { resources?.sleep('manual'); },
+  speak: () => setSpeakReplies(!config.speakReplies),
+  settings: () => { showPanel(); send({ type: 'open-view', view: 'settings' }); },
+  log: () => { showPanel(); send({ type: 'open-view', view: 'log' }); },
+  'open-settings-file': () => ui.open(SETTINGS_FILE),
+  reload: () => { applyConfig({ announce: true }); showPanel(); },
+  'open-log-file': () => ui.open(fs.existsSync(LOG_FILE) ? LOG_FILE : DATA_DIR),
+  'open-notes': () => { fs.mkdirSync(NOTES_DIR, { recursive: true }); ui.open(NOTES_DIR); },
+  quit: () => quit(),
+};
 
 function rebuildTrayMenu() {
-  if (!tray) return;
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Показати панель', click: () => showPanel() },
-    { label: 'Нова розмова', click: () => newChat() },
+  if (!config) return;
+  ui.setMenu([
+    { id: 'show', label: 'Показати панель' },
+    { id: 'new-chat', label: 'Нова розмова' },
     resources?.asleep
-      ? { label: 'Спить — пам\'ять звільнено', enabled: false }
-      : { label: 'Звільнити відеопам\'ять (заснути)', click: () => { resources?.sleep('manual'); } },
-    { label: 'Озвучувати відповіді', type: 'checkbox', checked: !!config?.speakReplies, enabled: !!config?.speech?.enabled, click: (item) => setSpeakReplies(item.checked) },
-    { type: 'separator' },
-    { label: 'Налаштування…', click: () => { showPanel(); send({ type: 'open-view', view: 'settings' }); } },
-    { label: 'Журнал дій…', click: () => { showPanel(); send({ type: 'open-view', view: 'log' }); } },
-    { type: 'separator' },
-    { label: 'Відкрити файл налаштувань (settings.json)', click: () => shell.openPath(SETTINGS_FILE) },
-    { label: 'Перечитати налаштування', click: () => { applyConfig({ announce: true }); showPanel(); } },
-    { label: 'Відкрити файл журналу', click: () => (fs.existsSync(LOG_FILE) ? shell.openPath(LOG_FILE) : shell.openPath(DATA_DIR)) },
-    { label: 'Відкрити папку нотаток', click: () => { fs.mkdirSync(NOTES_DIR, { recursive: true }); shell.openPath(NOTES_DIR); } },
-    { type: 'separator' },
-    { label: 'Вийти', click: () => { quitting = true; app.quit(); } },
-  ]));
+      ? { id: 'asleep', label: 'Спить — пам\'ять звільнено', enabled: false }
+      : { id: 'sleep', label: 'Звільнити відеопам\'ять (заснути)' },
+    { id: 'speak', label: 'Озвучувати відповіді', checked: !!config.speakReplies, enabled: !!config.speech?.enabled },
+    { separator: true },
+    { id: 'settings', label: 'Налаштування…' },
+    { id: 'log', label: 'Журнал дій…' },
+    { separator: true },
+    { id: 'open-settings-file', label: 'Відкрити файл налаштувань (settings.json)' },
+    { id: 'reload', label: 'Перечитати налаштування' },
+    { id: 'open-log-file', label: 'Відкрити файл журналу' },
+    { id: 'open-notes', label: 'Відкрити папку нотаток' },
+    { separator: true },
+    { id: 'quit', label: 'Вийти' },
+  ]);
 }
 
 // ---------- Голос ----------
@@ -336,10 +312,10 @@ function endTurn() {
   turnActive = false;
   resources?.touch(); // відлік простою починається після кожної розмови
   if (replanAfterTurn) { replanAfterTurn = false; planGpu(); }
-  if (quitting || !win || win.isDestroyed()) return; // застосунок уже закривається
+  if (quitting) return; // застосунок уже закривається
   send({ type: 'busy', value: false });
   if (state !== 'error') setState('idle');
-  if (!win.isFocused()) { showPanel({ focus: false }); scheduleAutoHide(); }
+  if (!ui.focused) { showPanel({ focus: false }); scheduleAutoHide(); }
 }
 
 function setSpeakReplies(value) {
@@ -399,7 +375,7 @@ function wakeUp() {
 
 function onSleepChange(asleep, why) {
   if (quitting) return;
-  if (tray) tray.setToolTip(trayTip());
+  ui.setTray({ tip: trayTip() });
   rebuildTrayMenu();
   send({ type: 'asleep', value: asleep });
   if (!asleep) return;
@@ -412,7 +388,7 @@ function onSleepChange(asleep, why) {
 // Один хід розмови: запит до моделі, відповідь у панель і (якщо ввімкнено) голосом.
 // Текст відповіді надходить потоком: панель показує його одразу, а кожне завершене речення йде на озвучення,
 // тож асистент починає говорити з першого речення. Повертає true, якщо після ходу треба одразу слухати далі.
-async function runTurn(text, { voice = false } = {}) {
+async function runTurn(text, { byVoice = false } = {}) {
   const generation = agent.generation;
   const current = () => generation === agent.generation; // false, якщо посеред ходу почали нову розмову
   const tts = talker(); // хто говорить у цьому ході — не змінюється посеред відповіді
@@ -501,7 +477,7 @@ async function runTurn(text, { voice = false } = {}) {
     }
     if (!current() || turnCancelled) return false;
     if (listenNext) return true;                       // відповідь перебито гарячою клавішею
-    return voice && said && !interrupted && !speechBroken && config.followUp; // розмова голосом триває
+    return byVoice && said && !interrupted && !speechBroken && config.followUp; // розмова голосом триває
   } catch (e) {
     denyAllConfirms();
     if (turnSpoke) hush();
@@ -589,7 +565,7 @@ async function startListening() {
         return;
       }
       send({ type: 'user', text: heard.text });
-      if (!(await runTurn(heard.text, { voice: true }))) return;
+      if (!(await runTurn(heard.text, { byVoice: true }))) return;
     }
   } finally {
     listeningAuto = false;
@@ -616,13 +592,10 @@ function setFollowUp(value) {
 async function pickPath(kind) {
   dialogOpen = true;
   try {
-    const res = await dialog.showOpenDialog(win, kind === 'exe'
-      ? { title: 'Яку програму дозволити асистенту?', properties: ['openFile'], filters: [{ name: 'Програми', extensions: ['exe'] }] }
-      : { title: 'Яку папку дозволити асистенту?', properties: ['openDirectory'] });
-    return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0];
+    return await ui.pick(kind, kind === 'exe' ? 'Яку програму дозволити асистенту?' : 'Яку папку дозволити асистенту?');
   } finally {
     dialogOpen = false;
-    if (!quitting && win && !win.isDestroyed()) { win.show(); win.focus(); }
+    if (!quitting) showPanel();
   }
 }
 
@@ -634,26 +607,21 @@ function changeSettings(change, payload) {
     if (['string', 'boolean'].includes(typeof payload?.[field])) args[field] = payload[field];
   }
   logAction({ tool: 'settings', args, decision: 'user', ok: result.ok, ...(result.ok ? {} : { error: result.error }) });
-  if (result.ok) {
-    applyConfig();
-    send({ type: 'config', hotkey: activeHotkey, model: config.model, speakReplies: config.speakReplies, warnings: [] });
-  }
+  if (result.ok) applyConfig(); // оновлений стан (зокрема клавішу) панель отримає подією
   return result;
 }
 
-function changeHotkey(hotkey) {
+async function changeHotkey(hotkey) {
   hotkeySuspended = false;
-  if (!isValidHotkey(hotkey)) { applyConfig(); return { ok: false, error: 'Потрібне сполучення з Ctrl, Alt або Win і однієї клавіші, наприклад Ctrl + Shift + Space' }; }
+  if (!isValidHotkey(hotkey)) { await registerHotkeys(); return { ok: false, error: 'Потрібне сполучення з Ctrl, Alt або Win і однієї клавіші, наприклад Ctrl + Shift + Space' }; }
   // спершу перевіряємо, чи Windows віддасть нам це сполучення, і лише тоді записуємо
-  globalShortcut.unregisterAll();
-  let free = false;
-  try { free = globalShortcut.register(hotkey, onHotkey); } catch { free = false; }
-  if (!free) {
-    applyConfig(); // повертаємо попередню клавішу
+  if (!(await registerHotkeys({ only: hotkey }))) {
+    await registerHotkeys(); // повертаємо попередню клавішу
     return { ok: false, error: 'Це сполучення вже зайняте іншою програмою або Windows. Спробуй інше.' };
   }
   const result = changeSettings('setHotkey', { hotkey });
-  if (!result.ok) applyConfig(); // запис не вдався — повертаємо попередню клавішу, а не лишаємо незбережену
+  if (result.ok) activeHotkey = hotkey;
+  await registerHotkeys(); // запис не вдався — повертаємо попередню клавішу; вдався — підтверджуємо нову
   return result;
 }
 
@@ -676,7 +644,7 @@ async function handleSettings(action, payload) {
     result = Number.isInteger(data.minutes) && data.minutes >= 0 && data.minutes <= 240
       ? setOption('idleUnloadMinutes', data.minutes) : { ok: false, error: 'Некоректний час простою' };
   } else if (action === 'setHotkey') {
-    result = changeHotkey(data.hotkey);
+    result = await changeHotkey(data.hotkey);
   } else if (SIMPLE_CHANGES.has(action)) {
     result = changeSettings(action, data);
   } else if (action !== 'get') {
@@ -685,98 +653,88 @@ async function handleSettings(action, payload) {
   return { ...result, view: settingsView(config, warnings), activeHotkey };
 }
 
-// Приймаємо повідомлення лише від власної сторінки панелі
-const trusted = (event) => event.senderFrame?.url === INDEX_URL && event.sender === win?.webContents;
-
-function registerIpc() {
-  ipcMain.handle('offgrid:ready', async (e) => {
-    if (!trusted(e)) return null;
-    return {
-      state, busy: turnActive, asleep: !!resources?.asleep, hotkey: activeHotkey, model: config.model, warnings, speakReplies: config.speakReplies,
-      voice: { status: speech?.status ?? 'off', error: speech?.error ?? null },
-    };
-  });
-  ipcMain.on('offgrid:ask', (e, text) => {
-    if (trusted(e) && typeof text === 'string' && text.trim()) startTextTurn(text);
-  });
-  ipcMain.on('offgrid:listen', (e) => {
-    if (!trusted(e)) return;
-    if (state === 'listening') speech.stopListening(); else startListening();
-  });
-  ipcMain.on('offgrid:set-speak', (e, value) => { if (trusted(e)) setSpeakReplies(value === true); });
-  ipcMain.on('offgrid:cancel', (e) => { if (trusted(e)) cancelAll(); });
-  ipcMain.on('offgrid:confirm', (e, id, allow) => {
-    if (!trusted(e)) return;
-    pendingConfirms.get(id)?.finish(allow === true);
-  });
-  ipcMain.on('offgrid:new-chat', (e) => { if (trusted(e)) newChat(); });
-  ipcMain.on('offgrid:hide', (e) => { if (trusted(e)) hidePanel(); });
-  ipcMain.handle('offgrid:settings', (e, action, payload) => (trusted(e) && typeof action === 'string' ? handleSettings(action, payload) : null));
-  ipcMain.handle('offgrid:ping', (e) => (trusted(e) ? ping(config) : false));
-  ipcMain.handle('offgrid:log', (e) => (trusted(e) ? readLog(150) : []));
+// Запити панелі. Сюди доходить лише те, що пройшло перевірку ключа на сервері (server.js).
+const API = {
+  ready: async () => ({
+    state, busy: turnActive, asleep: !!resources?.asleep, hotkey: activeHotkey, model: config.model, warnings,
+    speakReplies: config.speakReplies, voice: { status: speech?.status ?? 'off', error: speech?.error ?? null },
+  }),
+  ask: async ({ text }) => { if (typeof text === 'string' && text.trim()) startTextTurn(text); return true; },
+  listen: async () => { if (state === 'listening') speech.stopListening(); else startListening(); return true; },
+  'set-speak': async ({ value }) => { setSpeakReplies(value === true); return true; },
+  cancel: async () => { cancelAll(); return true; },
+  confirm: async ({ id, allow }) => { pendingConfirms.get(String(id))?.finish(allow === true); return true; },
+  'new-chat': async () => { newChat(); return true; },
+  hide: async () => { hidePanel(); return true; },
+  settings: async ({ action, payload }) => (typeof action === 'string' ? handleSettings(action, payload) : null),
+  ping: async () => ping(config),
+  log: async () => readLog(150),
   // Поки користувач записує нове сполучення, чинну гарячу клавішу знімаємо: інакше її натискання
   // почало б розмову замість того, щоб потрапити в поле запису
-  ipcMain.on('offgrid:capture-hotkey', (e, on) => {
-    if (!trusted(e)) return;
-    if (on === true && !turnActive) { hotkeySuspended = true; globalShortcut.unregisterAll(); }
-    else if (hotkeySuspended) { hotkeySuspended = false; applyConfig(); }
-  });
-}
+  'capture-hotkey': async ({ on }) => {
+    if (on === true && !turnActive) { hotkeySuspended = true; hotkeyRun++; await ui.unregisterHotkey(); }
+    else if (hotkeySuspended) { hotkeySuspended = false; await registerHotkeys(); }
+    return true;
+  },
+};
 
 // ---------- Знімок для розробки ----------
 async function devScreenshot() {
   showPanel();
-  await new Promise((r) => setTimeout(r, 400));
+  await new Promise((r) => setTimeout(r, 600));
   for (let i = 0; i < 360 && (speech?.status === 'starting' || voice?.status === 'starting') && process.env.OFFGRID_SHOT_ASK; i++) await new Promise((r) => setTimeout(r, 500));
   if (gpuPlan) await gpuPlan;
   const phrase = process.env.OFFGRID_SHOT_ASK;
   if (phrase) {
-    // справжній наскрізний запит: панель -> IPC -> агент -> модель -> панель
-    await win.webContents.executeJavaScript(`document.getElementById('input').value = ${JSON.stringify(phrase)}; document.getElementById('form').requestSubmit();`);
+    // справжній запит: агент -> модель -> панель (і голос, якщо ввімкнено)
+    send({ type: 'user', text: phrase });
+    startTextTurn(phrase);
     await new Promise((r) => setTimeout(r, 500));
     for (let i = 0; i < 240 && (turnActive || pendingConfirms.size > 0); i++) await new Promise((r) => setTimeout(r, 500));
   } else if (process.env.OFFGRID_SHOT_VIEW) {
     const [view, tab] = process.env.OFFGRID_SHOT_VIEW.split(':');
     send({ type: 'open-view', view, tab });
-    await new Promise((r) => setTimeout(r, Number(process.env.OFFGRID_SHOT_WAIT) || 600));
+    await new Promise((r) => setTimeout(r, Number(process.env.OFFGRID_SHOT_WAIT) || 800));
   } else {
     send({ type: 'demo' });
   }
-  await new Promise((r) => setTimeout(r, 400));
-  try {
-    const image = await win.webContents.capturePage();
-    fs.writeFileSync(SHOT, image.toPNG());
-  } catch (e) {
-    console.error('Знімок не вдався:', e.message);
-  }
-  quitting = true;
-  app.quit();
+  await new Promise((r) => setTimeout(r, 500));
+  if (!(await ui.shot(SHOT))) console.error('Знімок не вдався');
+  quit();
 }
 
-// ---------- Запуск ----------
-app.on('second-instance', () => showPanel());
-app.on('window-all-closed', () => { /* застосунок живе в треї */ });
-app.on('will-quit', () => { globalShortcut.unregisterAll(); resources?.stop(); speech?.stop(); voice?.stop(); });
-// Жодне вікно застосунку не має права щось відкривати чи кудись переходити
-app.on('web-contents-created', (_e, contents) => {
-  contents.on('will-attach-webview', (e) => e.preventDefault());
-});
+// ---------- Запуск і вихід ----------
+function quit() {
+  if (quitting) return;
+  quitting = true;
+  clearTimeout(hideTimer);
+  resources?.stop();
+  speech?.stop();
+  voice?.stop();
+  ui.stop();
+  server?.close();
+  instanceServer?.close();
+  setTimeout(() => process.exit(0), 2500).unref(); // якщо щось не закрилося саме
+}
 
-app.whenReady().then(() => {
-  if (!gotLock) return; // друга копія: перша вже працює, ця лише завершується
-  // Панель не ходить у мережу взагалі: дозволені лише власні локальні файли
-  session.defaultSession.webRequest.onBeforeRequest((details, cb) => {
-    const ok = details.url.startsWith('file:') || details.url.startsWith('devtools:');
-    cb({ cancel: !ok });
+// Єдина копія: якщо канал уже зайнятий, застосунок працює — просимо його показати панель і виходимо
+let instanceServer = null;
+function claimInstance() {
+  return new Promise((resolve) => {
+    const srv = net.createServer((socket) => { socket.on('data', () => showPanel()); socket.on('error', () => {}); });
+    srv.once('error', () => {
+      const client = net.connect(INSTANCE_PIPE, () => { client.end('show'); resolve(false); });
+      client.once('error', () => resolve(false));
+    });
+    srv.listen(INSTANCE_PIPE, () => { instanceServer = srv; resolve(true); });
   });
-  session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
-  session.defaultSession.setPermissionCheckHandler(() => false);
+}
 
-  const os = {
-    ...nodeOs,
-    openPath: async (p) => (await shell.openPath(p)) === '',
-    openUrl: async (url) => { try { await shell.openExternal(url); return true; } catch { return false; } },
-  };
+async function start() {
+  if (!(await claimInstance())) { console.log('Offgrid уже запущено — показую його панель.'); process.exit(0); }
+
+  // файли, папки й сайти відкриває оболонка — системним механізмом, як подвійне клацання в Провіднику
+  const os = { ...nodeOs, openPath: (p) => ui.open(p), openUrl: (url) => ui.open(url) };
   config = loadConfig({ toolModes: TOOL_MODES }).config;
   agent = new Agent({
     config,
@@ -834,14 +792,28 @@ app.whenReady().then(() => {
     onChange: onSleepChange,
   });
 
-  registerIpc();
-  createWindow();
-  createTray();
-  applyConfig(); // тут же запускається мовний сервіс, якщо голос увімкнено
+  // Сервер панелі та оболонка
+  server = new PanelServer(API);
+  const url = await server.listen();
+  ui.on('hotkey', onHotkey);
+  ui.on('tray-click', togglePanel);
+  ui.on('menu', (id) => { if (Object.hasOwn(MENU_ACTIONS, id)) MENU_ACTIONS[id](); });
+  ui.on('blur', onBlur);
+  ui.on('exit', () => { if (!quitting) { console.error('Оболонка несподівано закрилась — завершую роботу.'); quit(); } });
+  try {
+    await ui.start({ url, dataDir: WEBVIEW_DATA, width: WIDTH, height: HEIGHT });
+  } catch (e) {
+    console.error(e.message);
+    quit();
+    return;
+  }
+  ui.setTray({ icon: iconPng('idle'), tip: trayTip() });
+  applyConfig(); // тут же запускаються мовні сервіси й реєструється гаряча клавіша
   if (!SHOT) resources.start();
   if (!SHOT) logAction({ tool: 'app', args: {}, decision: 'auto', ok: true, message: 'Offgrid запущено' });
+  if (SHOT) devScreenshot(); else showPanel();
+}
 
-  win.webContents.once('did-finish-load', () => {
-    if (SHOT) devScreenshot(); else showPanel();
-  });
-});
+process.on('SIGINT', quit);
+process.on('SIGTERM', quit);
+start();

@@ -3,7 +3,7 @@ import { chat } from './ollama.js';
 import { systemPrompt } from './prompt.js';
 import { toolSchemas, TOOL_LABELS } from '../tools/index.js';
 import { executeTool, toolMessageContent } from '../security/policy.js';
-import { stripFiller } from './tone.js';
+import { stripFiller, announcesIntent } from './tone.js';
 
 const MAX_STEPS = 6;
 const MAX_CALLS_PER_STEP = 4;
@@ -15,6 +15,8 @@ const HISTORY_BUDGET_CHARS = 2200;
 const MAX_INPUT_CHARS = 2000;
 const IDLE_RESET_MS = 15 * 60 * 1000;
 const CANCELLED = 'Скасовано';
+// Якщо модель лише описала намір («зараз перевірю час»), а інструмент не викликала, — один раз на запит кажемо їй діяти
+const NUDGE = '(Асистенте, ти лише описав, що збираєшся зробити, але не зробив цього. Виклич потрібний інструмент просто зараз, без пояснень.)';
 const REMINDER = '\n\n(Нагадування асистенту: якщо це прохання щось зробити на комп’ютері або дізнатися час, стан системи чи файли — спершу виклич інструмент. Не кажи, що щось зроблено чи відомо, без результату інструмента в цьому ж ході. На привітання, подяку й просту балачку відповідай одразу, без інструментів.)';
 
 export class Agent {
@@ -100,6 +102,10 @@ export class Agent {
     try {
       messages.push({ role: 'user', content: input });
       const tools = toolSchemas(this.config);
+      const toolNames = tools.map((t) => t.function.name);
+      let nudge = null;      // слова моделі й наше «роби» — лише для наступного запиту, в історію не потрапляють
+      let nudged = false;
+      let toolsCalled = 0;
 
       for (let step = 0; step < MAX_STEPS; step++) {
         emit({ type: 'state', state: 'thinking' });
@@ -108,12 +114,20 @@ export class Agent {
         // посеред розмови модель інакше схильна «розповісти», що зробила, не викликавши інструмент.
         const last = messages.findLastIndex((m) => m.role === 'user');
         const request = messages.map((m, i) => (i === last ? { ...m, content: m.content + REMINDER } : m));
+        if (nudge) { request.push(...nudge); nudge = null; }
         const message = await chat(this.config, [{ role: 'system', content: systemPrompt(this.config) }, ...request], tools, signal,
           (piece) => { streamed = true; emit({ type: 'reply-delta', text: piece }); });
         if (!current()) throw new Error(CANCELLED);
         const calls = Array.isArray(message.tool_calls) ? message.tool_calls.slice(0, MAX_CALLS_PER_STEP) : [];
         // в історію теж кладемо відповідь без чергового «чим ще допомогти?», щоб модель не вчилася на власній звичці
         const content = calls.length ? (message.content ?? '') : stripFiller(message.content);
+        if (calls.length === 0 && !nudged && announcesIntent(content, toolNames, toolsCalled > 0)) {
+          // сказано «зроблю», а не зроблено: цю репліку відкидаємо й просимо модель діяти
+          nudged = true;
+          nudge = [{ role: 'assistant', content }, { role: 'user', content: NUDGE }];
+          if (streamed) emit({ type: 'reply-reset' });
+          continue;
+        }
         messages.push({ role: 'assistant', content, ...(calls.length ? { tool_calls: calls } : {}) });
         if (calls.length === 0) return content || 'Не маю відповіді.';
         // текст перед викликом інструмента — не відповідь, а «вступ»: з екрана його прибираємо
@@ -122,6 +136,7 @@ export class Agent {
         emit({ type: 'state', state: 'executing' });
         for (const call of calls) {
           const name = String(call?.function?.name ?? '');
+          toolsCalled++;
           const { result, untrusted } = signal.aborted || !current()
             ? { result: { ok: false, error: 'Скасовано користувачем' }, untrusted: false }
             : await executeTool(name, call?.function?.arguments, session);

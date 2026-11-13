@@ -19,6 +19,21 @@ async function gpuInfo(run) {
   return { name, vram_used_gb: +(used / 1024).toFixed(1), vram_total_gb: +(total / 1024).toFixed(1) };
 }
 
+// Час словами для вимови: «тринадцята тридцять три». Складає код, а не модель — вона плутала години.
+const HOURS = ['нуль', 'перша', 'друга', 'третя', 'четверта', 'п\'ята', 'шоста', 'сьома', 'восьма', 'дев\'ята', 'десята', 'одинадцята',
+  'дванадцята', 'тринадцята', 'чотирнадцята', 'п\'ятнадцята', 'шістнадцята', 'сімнадцята', 'вісімнадцята', 'дев\'ятнадцята', 'двадцята',
+  'двадцять перша', 'двадцять друга', 'двадцять третя'];
+const ONES = ['', 'одна', 'дві', 'три', 'чотири', 'п\'ять', 'шість', 'сім', 'вісім', 'дев\'ять', 'десять', 'одинадцять', 'дванадцять',
+  'тринадцять', 'чотирнадцять', 'п\'ятнадцять', 'шістнадцять', 'сімнадцять', 'вісімнадцять', 'дев\'ятнадцять'];
+const TENS = ['', '', 'двадцять', 'тридцять', 'сорок', 'п\'ятдесят'];
+
+export function timeInWords(hours, minutes) {
+  const h = HOURS[hours] ?? String(hours);
+  if (minutes === 0) return `${h} рівно`;
+  const m = minutes < 20 ? ONES[minutes] : `${TENS[Math.floor(minutes / 10)]} ${ONES[minutes % 10]}`.trim();
+  return `${h} ${minutes < 10 ? 'нуль ' : ''}${m}`;
+}
+
 const VOLUME_KEYS = { up: 175, down: 174, mute: 173 };
 const VOLUME_STEPS = { small: 5, medium: 10, large: 20 };
 
@@ -27,7 +42,7 @@ export default [
     name: 'get_time',
     confirm: 'never',
     schema: () => ({
-      description: 'Повертає поточні дату, час і день тижня на комп\'ютері',
+      description: 'Повертає поточні дату, час і день тижня на комп\'ютері. Час називай словами з поля time_spoken, нічого в ньому не змінюючи',
       parameters: { type: 'object', properties: {} },
     }),
     run() {
@@ -36,6 +51,7 @@ export default [
       return {
         ok: true,
         time: now.toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' }),
+        time_spoken: timeInWords(now.getHours(), now.getMinutes()),
         date: now.toLocaleDateString('uk-UA', { day: 'numeric', month: 'long', year: 'numeric' }),
         weekday: now.toLocaleDateString('uk-UA', { weekday: 'long' }),
       };

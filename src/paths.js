@@ -18,4 +18,3 @@ export const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 export const LOG_FILE = path.join(DATA_DIR, 'actions.log');
 export const NOTES_DIR = path.join(DATA_DIR, 'notes');
 export const NOTES_TRASH = path.join(NOTES_DIR, '_кошик');
-export const ELECTRON_DATA = path.join(DATA_DIR, 'electron');

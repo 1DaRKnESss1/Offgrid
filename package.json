@@ -4,16 +4,13 @@
   "description": "Локальний голосовий асистент для Windows 11 у треї",
   "private": true,
   "type": "module",
-  "main": "src/main/main.js",
+  "main": "src/app/main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "node src/app/main.js",
     "test": "node --test",
     "smoke": "node scripts/smoke.js",
     "tool-eval": "node scripts/tool-eval.js",
     "speech-check": "node scripts/speech-check.js",
     "speech-selftest": "python speech/selftest.py"
-  },
-  "devDependencies": {
-    "electron": "^45.2.3"
   }
 }

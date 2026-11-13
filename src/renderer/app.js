@@ -58,7 +58,7 @@ function setBusy(value) {
 function add(kind, text) {
   log.querySelector('.empty')?.remove();
   const el = document.createElement('div');
-  el.className = kind === 'tool' || kind === 'tool failed' ? kind : `msg ${kind}`;
+  el.className = kind === 'tool' || kind === 'tool failed' || kind === 'note' ? kind : `msg ${kind}`;
   el.textContent = text;
   if (liveEl && el !== liveEl) log.insertBefore(el, liveEl); else log.append(el);
   log.scrollTop = log.scrollHeight;
@@ -177,7 +177,7 @@ window.offgrid.onEvent((event) => {
       break;
     case 'error': add('error', event.text); break;
     case 'stopped': add('tool failed', 'Зупинено'); break;
-    case 'soft': add('tool failed', event.text); break;
+    case 'soft': add('note', event.text); break;
     case 'partial': setLive(event.text); break;
     case 'partial-end': endLive(); break;
     case 'tool': add(event.ok ? 'tool' : 'tool failed', event.text || event.name); break;
