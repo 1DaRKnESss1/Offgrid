@@ -3,13 +3,14 @@
 # trusts: PowerShell + .NET WinForms + the WebView2 runtime that ships with Windows 11.
 #
 # It has no logic of its own. The Node process (src/app/main.js) starts it and drives it:
-#   Node -> shell : one JSON object per line on stdin   (show, hide, tray, menu, hotkey, pick, open, shot, quit)
+#   Node -> shell : one JSON object per line on stdin   (navigate, show, hide, tray, menu, hotkey, pick, open, shot, quit)
+# The panel address (with its one-time key) arrives through stdin, never on the command line, so that other
+# programs cannot read it from the process list.
 #   shell -> Node : one JSON object per line on stdout  (ready, hotkey, tray-click, menu, blur, focus, picked, ...)
 # When stdin closes (the Node process is gone) the shell exits by itself.
 #
 # This file is ASCII-only on purpose: all user-visible text arrives from Node as UTF-8 JSON.
 param(
-  [Parameter(Mandatory)][string]$Url,
   [Parameter(Mandatory)][string]$DataDir,
   [int]$Width = 400,
   [int]$Height = 540,
@@ -98,7 +99,9 @@ $props.AdditionalBrowserArguments = "--disable-gpu --disable-features=msSmartScr
 $wv.CreationProperties = $props
 $form.Controls.Add($wv)
 
-$origin = ([Uri]$Url).GetLeftPart([System.UriPartial]::Authority)
+$script:origin = $null   # set by the 'navigate' command
+$script:pendingUrl = $null
+$script:coreReady = $false
 
 $wv.add_CoreWebView2InitializationCompleted({
   param($s, $e)
@@ -114,11 +117,12 @@ $wv.add_CoreWebView2InitializationCompleted({
     $set.IsPasswordAutosaveEnabled = $false
     $set.IsGeneralAutofillEnabled = $false
     # The panel shows only its own local page: no other navigation, no new windows, no permissions, no downloads
-    $core.add_NavigationStarting({ param($s2, $e2) if (-not $e2.Uri.StartsWith($origin + "/")) { $e2.Cancel = $true } })
+    $core.add_NavigationStarting({ param($s2, $e2) if (-not $script:origin -or -not $e2.Uri.StartsWith($script:origin + "/")) { $e2.Cancel = $true } })
     $core.add_NewWindowRequested({ param($s2, $e2) $e2.Handled = $true })
     $core.add_PermissionRequested({ param($s2, $e2) $e2.State = [Microsoft.Web.WebView2.Core.CoreWebView2PermissionState]::Deny })
     $core.add_DownloadStarting({ param($s2, $e2) $e2.Cancel = $true })
-    $core.Navigate($Url)
+    $script:coreReady = $true
+    if ($script:pendingUrl) { $core.Navigate($script:pendingUrl); $script:pendingUrl = $null }
   } catch { Emit @{ t = "fatal"; error = $_.Exception.Message } }
 })
 $script:loaded = $false
@@ -192,6 +196,12 @@ $hotkey.add_Pressed({ Emit @{ t = "hotkey" } })
 function Invoke-Command-Line([string]$line) {
   $cmd = $line | ConvertFrom-Json
   switch ($cmd.c) {
+    "navigate" {
+      $u = [Uri][string]$cmd.url
+      if ($u.Host -ne "127.0.0.1") { throw "only the local panel address is allowed" }
+      $script:origin = $u.GetLeftPart([System.UriPartial]::Authority)
+      if ($script:coreReady) { $wv.CoreWebView2.Navigate($u.AbsoluteUri) } else { $script:pendingUrl = $u.AbsoluteUri }
+    }
     "show"   { Show-Panel ([bool]$cmd.focus) }
     "hide"   { Hide-Panel }
     "tray"   { if ($cmd.icon) { Set-TrayIcon $cmd.icon }; if ($cmd.tip) { $t = [string]$cmd.tip; if ($t.Length -gt 63) { $t = $t.Substring(0, 63) }; $tray.Text = $t } }
@@ -251,7 +261,12 @@ $timer.add_Tick({
       if ($null -eq $line) { Stop-Shell; return }      # Node is gone
       $script:read = $stdin.ReadLineAsync()
       if ($line.Trim()) {
-        try { Invoke-Command-Line $line } catch { Emit @{ t = "error"; error = $_.Exception.Message } }
+        try { Invoke-Command-Line $line } catch {
+          # a failed command still gets its reply, otherwise Node would wait for it forever (e.g. a file dialog)
+          $failedId = $null
+          try { $failedId = ($line | ConvertFrom-Json).id } catch { }
+          if ($null -ne $failedId) { Emit @{ t = "reply"; id = $failedId; ok = $false; error = $_.Exception.Message } } else { Emit @{ t = "error"; error = $_.Exception.Message } }
+        }
       }
     }
     for ($i = $script:tasks.Count - 1; $i -ge 0; $i--) {

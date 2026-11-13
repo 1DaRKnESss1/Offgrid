@@ -26,6 +26,23 @@ const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'speakReplies', 'fol
 
 const WINDIR = process.env.SystemRoot ?? 'C:\\Windows';
 
+const HOTKEY_KEY = /^(?:[A-Z0-9]|F(?:[1-9]|1\d|2[0-4])|Space|Tab|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right)$/;
+const HOTKEY_MODS = ['Control', 'Alt', 'Shift', 'Super'];
+const RESERVED_HOTKEYS = new Set(['Alt+Tab', 'Alt+F4', 'Control+Alt+Tab', 'Alt+Space']);
+
+// Гаряча клавіша: модифікатори без повторів, серед них обов'язково Ctrl, Alt або Win (сам Shift не рахується:
+// Shift + A — це просто велика літера, і глобальна клавіша зламала б друк), плюс одна звичайна клавіша.
+export function isValidHotkey(hotkey) {
+  if (typeof hotkey !== 'string' || hotkey.length > 40) return false;
+  const parts = hotkey.split('+');
+  const key = parts.pop();
+  if (!HOTKEY_KEY.test(key) || parts.length < 1 || parts.length > 3) return false;
+  if (new Set(parts).size !== parts.length || !parts.every((m) => HOTKEY_MODS.includes(m))) return false;
+  if (!parts.some((m) => m !== 'Shift')) return false;
+  return !RESERVED_HOTKEYS.has(hotkey);
+}
+
+
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
 }
@@ -173,7 +190,11 @@ export function validateConfig(raw, defaults, toolModes = null) {
     else warn(`ollamaUrl «${raw.ollamaUrl}» не локальна адреса — використано ${defaults.ollamaUrl}`);
   }
 
-  cfg.hotkey = typeof raw.hotkey === 'string' && raw.hotkey.trim() ? raw.hotkey.trim() : defaults.hotkey;
+  cfg.hotkey = defaults.hotkey;
+  if (raw.hotkey !== undefined) {
+    if (typeof raw.hotkey === 'string' && isValidHotkey(raw.hotkey.trim())) cfg.hotkey = raw.hotkey.trim();
+    else warn(`hotkey: «${raw.hotkey}» не годиться — потрібне сполучення з Ctrl, Alt або Win і однієї клавіші; використано ${defaults.hotkey}`);
+  }
   cfg.speakReplies = typeof raw.speakReplies === 'boolean' ? raw.speakReplies : defaults.speakReplies;
   // після відповіді голосом кілька секунд слухати продовження без клавіші
   cfg.followUp = typeof raw.followUp === 'boolean' ? raw.followUp : defaults.followUp === true;

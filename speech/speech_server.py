@@ -1,6 +1,6 @@
 """
 Мовний сервіс Offgrid: мікрофон -> текст (Whisper) і текст -> голос (Piper).
-Працює лише на цьому комп'ютері, на процесорі, без звернень у мережу.
+Працює лише на цьому комп'ютері, без звернень у мережу; розпізнавання — на відеокарті, якщо вона доступна.
 
 Запускає його сам застосунок (src/speech/client.js) і передає налаштування змінними середовища:
   OFFGRID_SPEECH_PORT, OFFGRID_SPEECH_TOKEN, OFFGRID_WHISPER_MODEL, OFFGRID_WHISPER_LIVE_MODEL,
@@ -333,6 +333,8 @@ def listen(emit, wait_s=WAIT_FOR_SPEECH_S, strict=False):
 
     def partial_worker(audio):
         try:
+            if finished.is_set():  # запис уже закінчився: чернетка нікому не потрібна, і модель будити не слід
+                return
             text = transcribe(audio, quick=True)
             if text and not finished.is_set():
                 emit({"type": "partial", "text": text})

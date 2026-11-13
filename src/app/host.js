@@ -58,10 +58,15 @@ export class Host extends EventEmitter {
     return new Promise((resolve, reject) => {
       if (!shellInstalled()) return reject(new Error('Немає бібліотек WebView2. Виконай: powershell -ExecutionPolicy Bypass -File scripts\\setup-webview2.ps1'));
       fs.mkdirSync(dataDir, { recursive: true });
+      // адреса панелі містить одноразовий ключ, тому йде не в командний рядок (його бачать інші програми),
+      // а першою командою через stdin
       const child = spawn(POWERSHELL, ['-NoProfile', '-NoLogo', '-STA', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT,
-        '-Url', url, '-DataDir', dataDir, '-Width', String(width), '-Height', String(height)],
+        '-DataDir', dataDir, '-Width', String(width), '-Height', String(height)],
       { windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
       this.child = child;
+      // якщо оболонка зникла, запис у її stdin дав би необроблену помилку й звалив би застосунок замість чистого виходу
+      child.stdin.on('error', () => {});
+      this.#send({ c: 'navigate', url });
       let started = false;
       let errTail = '';
       const timer = setTimeout(() => { if (!started) { this.#kill(); reject(new Error('Оболонка не встигла запуститися')); } }, START_TIMEOUT_MS);

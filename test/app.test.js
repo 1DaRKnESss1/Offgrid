@@ -184,3 +184,97 @@ test('агент: якщо модель лише пообіцяла, він од
     fs.rmSync(new URL('./.tmp/app-test', import.meta.url), { recursive: true, force: true });
   }
 });
+
+// ---------- Додано за результатами рев'ю ----------
+const { isValidHotkey } = await import('../src/security/config.js');
+const { Resources } = await import('../src/agent/resources.js');
+
+test('сервер панелі: ключ діє один раз, а далі потрібен секрет із cookie', async () => {
+  const got = [];
+  const server = new PanelServer({ ask: async (b) => { got.push(b.text); return true; } });
+  const url = new URL(await server.listen());
+  const port = Number(url.port);
+  const host = `127.0.0.1:${port}`;
+  try {
+    const first = await raw(port, { path: url.pathname + url.search, headers: { host } });
+    assert.equal(first.status, 302);
+    const cookie = first.headers['set-cookie'][0].split(';')[0];
+    const key = url.searchParams.get('k');
+    // той, хто підгледів адресу запуску, нічого з нею не зробить: ключ уже використано…
+    assert.equal((await raw(port, { path: url.pathname + url.search, headers: { host } })).status, 403);
+    // …а сам ключ не є секретом cookie
+    assert.ok(!cookie.includes(key));
+    const post = (headers, body = '{"text":"x"}') => raw(port, { method: 'POST', path: '/api/ask', headers: { host, 'content-type': 'application/json', ...headers }, body });
+    assert.equal((await post({ cookie: `offgrid=${key}` })).status, 403);
+    assert.equal((await post({ cookie: 'offgrid=' + 'a'.repeat(64) })).status, 403);
+    assert.equal((await post({ cookie, origin: 'null' })).status, 403);
+    assert.equal(got.length, 0);
+
+    // кирилиця, розірвана між двома шматками мережевого пакета, збирається без «�»
+    const body = Buffer.from(JSON.stringify({ text: 'відкрий блокнот і запиши нотатку' }));
+    const cut = body.indexOf(Buffer.from('б')) + 1; // посеред двобайтової літери
+    const status = await new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/api/ask',
+        headers: { host, cookie, 'content-type': 'application/json', 'content-length': body.length } }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+      req.on('error', reject);
+      req.write(body.subarray(0, cut));
+      setTimeout(() => req.end(body.subarray(cut)), 30);
+    });
+    assert.equal(status, 200);
+    assert.deepEqual(got, ['відкрий блокнот і запиши нотатку']);
+  } finally { server.close(); }
+});
+
+test('«вимога виконати» не перетворює пропозицію, уточнення чи відмову на дію', () => {
+  const names = ['get_time', 'write_note'];
+  for (const [text, did] of [
+    ['Якщо хочеш, запишу це в нотатки.', false],
+    ['Яку нотатку відкрити? Скажи назву, і я відкрию.', false],
+    ['Не можу: спершу дозволь, тоді відкрию.', false],
+    ['Я вмію таке: відкрию програму, знайду файл, запишу нотатку.', false],
+    ['Гаразд, закрию пізніше, якщо скажеш.', true],
+    ['Готово, час я отримав через get_time: тринадцята тридцять три.', true],
+    ['Я запитую час у системі — чекати треба?', false],
+  ]) assert.equal(announcesIntent(text, names, did), false, text);
+});
+
+test('гаряча клавіша з файлу налаштувань перевіряється так само суворо, як із панелі', () => {
+  assert.equal(isValidHotkey('Control+Shift+Space'), true);
+  for (const bad of ['Shift+A', 'A', 'Control+Control+A', 'Alt+Tab', 'whatever']) {
+    const { config, warnings } = validateConfig({ ...defaults, hotkey: bad }, defaults);
+    assert.equal(config.hotkey, defaults.hotkey, bad);
+    assert.ok(warnings.some((w) => w.startsWith('hotkey:')), bad);
+  }
+  assert.equal(validateConfig({ ...defaults, hotkey: 'Alt+F9' }, defaults).config.hotkey, 'Alt+F9');
+});
+
+test('сон після простою: якщо момент був невдалий, спроба повторюється сама', async () => {
+  let now = 0, id = 0;
+  const jobs = new Map();
+  const timers = {
+    setTimeout: (fn, ms) => { jobs.set(++id, { fn, at: now + ms }); return id; },
+    clearTimeout: (i) => jobs.delete(i),
+    setInterval: () => 0, clearInterval: () => {},
+  };
+  const advance = async (ms) => {
+    const end = now + ms;
+    for (;;) {
+      const next = [...jobs.entries()].filter(([, j]) => j.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!next) break;
+      jobs.delete(next[0]); now = next[1].at;
+      await next[1].fn();
+      await new Promise((r) => setImmediate(r));
+    }
+    now = end;
+  };
+  let busy = true, released = 0;
+  const res = new Resources({ getConfig: () => ({ idleUnloadMinutes: 5 }), isBusy: () => busy, release: async () => { released++; },
+    readVram: async () => null, timers });
+  res.touch();
+  await advance(5 * 60_000 + 1000);   // час вийшов, але відкрито діалог
+  assert.equal(res.asleep, false);
+  busy = false;                        // діалог закрили, нових розмов не було
+  await advance(6 * 60_000);
+  assert.equal(res.asleep, true, 'мав заснути без нової розмови');
+  assert.equal(released, 1);
+});

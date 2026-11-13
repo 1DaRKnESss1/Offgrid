@@ -1,6 +1,6 @@
 """
 Сервіс якісного голосу Offgrid на OmniVoice. Працює лише на цьому комп'ютері, на відеокарті, без мережі.
-Запускається із середовища speech\\tts-env самим застосунком (src/speech/voice.js); налаштування — змінними середовища:
+Запускається із середовища speech\\tts-env самим застосунком (src/speech/client.js); налаштування — змінними середовища:
   OFFGRID_SPEECH_PORT, OFFGRID_SPEECH_TOKEN, OFFGRID_VOICE_PROMPT (відбиток голосу .pt) або OFFGRID_VOICE_INSTRUCT
   (опис голосу), OFFGRID_VOICE_SPEED, OFFGRID_VOICE_STEPS, HF_HOME (де лежить модель)
 
@@ -90,7 +90,16 @@ def _to_gpu():
     """Викликається з уже захопленим MODEL_LOCK."""
     global ON_GPU
     if not ON_GPU:
-        _move("cuda:0")
+        try:
+            _move("cuda:0")
+        except Exception:  # noqa: BLE001 — напр., забракло відеопам'яті посеред переїзду
+            # половина моделі на відеокарті — найгірший стан: повертаємо все у звичайну пам'ять і лише тоді скаржимось
+            try:
+                _move("cpu")
+                torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
         ON_GPU = True
 
 

@@ -5,28 +5,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_CONFIG, SETTINGS_FILE } from '../paths.js';
-import { validateConfig, resolveExe, expandFolder, FILE_TYPE_GROUPS, OPENABLE, READABLE } from './config.js';
+import { validateConfig, resolveExe, expandFolder, isValidHotkey, FILE_TYPE_GROUPS, OPENABLE, READABLE } from './config.js';
 
 const KEY_RE = /^[a-z][a-z0-9_]{0,30}$/;
 const MAX_ITEMS = 60;
 const MISSING = 'Файл settings.json зник. Натисни «Перечитати налаштування» в меню іконки в треї — він створиться знову.';
 const BROKEN = 'Файл settings.json зіпсовано. Виправ його вручну: меню іконки в треї → «Відкрити налаштування».';
-const HOTKEY_KEY = /^(?:[A-Z0-9]|F(?:[1-9]|1\d|2[0-4])|Space|Tab|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right)$/;
-const HOTKEY_MODS = ['Control', 'Alt', 'Shift', 'Super'];
-const RESERVED_HOTKEYS = new Set(['Alt+Tab', 'Alt+F4', 'Control+Alt+Tab', 'Alt+Space']);
-
-// Гаряча клавіша: модифікатори без повторів, серед них обов'язково Ctrl, Alt або Win (сам Shift не рахується:
-// Shift + A — це просто велика літера, і глобальна клавіша зламала б друк), плюс одна звичайна клавіша.
-function validHotkey(hotkey) {
-  if (typeof hotkey !== 'string' || hotkey.length > 40) return false;
-  const parts = hotkey.split('+');
-  const key = parts.pop();
-  if (!HOTKEY_KEY.test(key) || parts.length < 1 || parts.length > 3) return false;
-  if (new Set(parts).size !== parts.length || !parts.every((m) => HOTKEY_MODS.includes(m))) return false;
-  if (!parts.some((m) => m !== 'Shift')) return false;
-  return !RESERVED_HOTKEYS.has(hotkey);
-}
-
 const isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
 const own = (obj, key) => typeof key === 'string' && isObject(obj) && Object.hasOwn(obj, key);
@@ -142,13 +126,13 @@ export const changes = {
     return null;
   },
   setHotkey(raw, { hotkey }) {
-    if (!validHotkey(hotkey)) throw new Error('Потрібне сполучення з Ctrl, Alt або Win і однієї клавіші, наприклад Ctrl + Shift + Space');
+    if (!isValidHotkey(hotkey)) throw new Error('Потрібне сполучення з Ctrl, Alt або Win і однієї клавіші, наприклад Ctrl + Shift + Space');
     raw.hotkey = hotkey;
     return null;
   },
 };
 
-export const isValidHotkey = validHotkey;
+export { isValidHotkey };
 
 /** Вносить одну правку. Повертає { ok: true } або { ok: false, error }. */
 export function editSettings(change, payload, toolModes = null) {

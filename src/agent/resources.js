@@ -11,6 +11,7 @@
 export const PRESSURE_FREE_MB = 200;   // менше вільної відеопам'яті — вважаємо, що комусь тісно
 export const PRESSURE_CHECKS = 2;      // стільки вимірів поспіль, щоб не реагувати на короткий сплеск
 export const PRESSURE_INTERVAL_MS = 10_000;
+const RETRY_MS = 30_000;
 
 export class Resources {
   /**
@@ -47,7 +48,12 @@ export class Resources {
     this.idleTimer = null;
     const minutes = this.getConfig().idleUnloadMinutes;
     if (this.asleep || !(minutes > 0)) return;
-    this.idleTimer = this.timers.setTimeout(() => { this.sleep('idle'); }, minutes * 60_000);
+    this.idleTimer = this.timers.setTimeout(async () => {
+      this.idleTimer = null;
+      // якщо саме зараз заснути не можна (відкрито діалог, щось вантажиться) — пробуємо ще раз трохи згодом,
+      // а не чекаємо наступної розмови, якої може й не бути
+      if (!(await this.sleep('idle')) && !this.asleep) this.idleTimer = this.timers.setTimeout(() => { this.touch(); }, RETRY_MS);
+    }, minutes * 60_000);
   }
 
   /** Заснути. Повертає true, якщо пам'ять справді звільнено зараз. */

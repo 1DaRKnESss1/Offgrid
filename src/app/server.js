@@ -1,9 +1,12 @@
 // Локальний сервер панелі: віддає її сторінку, приймає її запити й надсилає їй події.
 // Раніше це робив внутрішній канал Electron (IPC); тепер — HTTP на 127.0.0.1.
 //
-// Захист. Сервер слухає лише цей комп'ютер, на випадковому порту, і відповідає тільки тому, хто має
-// одноразовий ключ: панель отримує його в адресі при запуску, далі він живе в cookie. Інша програма чи
-// відкрита в браузері сторінка ключа не знає, тож не може ні читати події, ні давати команди.
+// Захист. Сервер слухає лише цей комп'ютер, на випадковому порту. Панель при запуску отримує одноразовий
+// ключ: він діє рівно один раз і одразу міняється на окремий секрет у cookie (HttpOnly), яким і підписані
+// всі подальші запити. Ключ передається оболонці через її stdin, а не в командному рядку, тож інші
+// програми його не бачать; а якби хтось і побачив його пізніше (скажімо, в історії вікна) — він уже не діє.
+// Сторінка в браузері не може ні читати події, ні давати команди: у неї немає cookie, і перевіряються
+// адреса та походження кожного запиту.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -36,7 +39,8 @@ export class PanelServer {
   /** handlers: { назва: async (тіло запиту) => відповідь } */
   constructor(handlers) {
     this.handlers = handlers;
-    this.token = randomBytes(32).toString('hex');
+    this.bootKey = randomBytes(32).toString('hex'); // одноразовий: діє лише для першого запиту панелі
+    this.secret = randomBytes(32).toString('hex');  // значення cookie; поза вікном панелі не з'являється ніде
     this.clients = new Set(); // відкриті потоки подій
     this.server = http.createServer((req, res) => { this.#handle(req, res).catch(() => { try { res.writeHead(500).end(); } catch { /* з'єднання вже закрите */ } }); });
     this.port = 0;
@@ -48,7 +52,7 @@ export class PanelServer {
       this.server.listen(0, '127.0.0.1', () => {
         this.port = this.server.address().port;
         this.origin = `http://127.0.0.1:${this.port}`;
-        resolve(`${this.origin}/?k=${this.token}`);
+        resolve(`${this.origin}/?k=${this.bootKey}`);
       });
     });
   }
@@ -72,7 +76,7 @@ export class PanelServer {
     const origin = req.headers.origin;
     if (origin && origin !== this.origin) return false;
     const m = String(req.headers.cookie ?? '').match(new RegExp(`(?:^|;\\s*)${COOKIE}=([0-9a-f]+)`));
-    return !!m && sameKey(m[1], this.token);
+    return !!m && sameKey(m[1], this.secret);
   }
 
   async #handle(req, res) {
@@ -81,8 +85,9 @@ export class PanelServer {
 
     // Перший запит панелі: ключ в адресі міняється на cookie, а з адреси зникає
     if (req.method === 'GET' && url.pathname === '/' && url.searchParams.has('k')) {
-      if (req.headers.host !== `127.0.0.1:${this.port}` || !sameKey(url.searchParams.get('k'), this.token)) return deny(403);
-      res.writeHead(302, { ...SECURITY_HEADERS, Location: '/', 'Set-Cookie': `${COOKIE}=${this.token}; HttpOnly; SameSite=Strict; Path=/` });
+      if (req.headers.host !== `127.0.0.1:${this.port}` || !this.bootKey || !sameKey(url.searchParams.get('k'), this.bootKey)) return deny(403);
+      this.bootKey = null; // використано — вдруге цей ключ нікому нічого не дасть
+      res.writeHead(302, { ...SECURITY_HEADERS, Location: '/', 'Set-Cookie': `${COOKIE}=${this.secret}; HttpOnly; SameSite=Strict; Path=/` });
       return res.end();
     }
     if (!this.#authorized(req)) return deny(403);
@@ -106,11 +111,16 @@ export class PanelServer {
     if (req.method === 'POST' && api && Object.hasOwn(this.handlers, api[1])) {
       // лише JSON: «прості» форми з інших сайтів сюди не пройдуть навіть теоретично
       if (!String(req.headers['content-type'] ?? '').startsWith('application/json')) return deny(415);
-      let raw = '';
+      // збираємо байти цілком і лише потім розкодовуємо: інакше кирилична літера, розірвана між двома
+      // шматками мережевого пакета, перетворилась би на «�»
+      const chunks = [];
+      let size = 0;
       for await (const chunk of req) {
-        raw += chunk;
-        if (raw.length > MAX_BODY) return deny(413);
+        size += chunk.length;
+        if (size > MAX_BODY) return deny(413);
+        chunks.push(chunk);
       }
+      const raw = Buffer.concat(chunks).toString('utf8');
       let body;
       try { body = raw ? JSON.parse(raw) : {}; } catch { return deny(400); }
       const result = await this.handlers[api[1]](body && typeof body === 'object' && !Array.isArray(body) ? body : {});

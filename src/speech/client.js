@@ -42,6 +42,7 @@ export class Speech {
     this.token = null;
     this.listening = null; // AbortController поточного запису
     this.device = 'cpu';
+    this.onGpu = false;    // чи модель сервісу зараз справді у відеопам'яті (для розподілу відеопам'яті)
     this.startId = 0;      // зростає з кожним start()/stop(): застарілий запуск бачить це й відступає
   }
 
@@ -65,6 +66,7 @@ export class Speech {
     const child = this.child;
     this.child = null;
     this.base = null;
+    this.onGpu = false;
     this.listening?.abort();
     if (child) this.#kill(child);
   }
@@ -140,6 +142,8 @@ export class Speech {
     }
     this.base = `http://127.0.0.1:${result.port}`;
     this.device = result.device; // 'gpu' — розпізнавання на відеокарті; 'omnivoice' — сервіс якісного голосу
+    // розпізнавання після запуску лежить у відеопам'яті; голосова модель — у звичайній, доки не заговорить
+    this.onGpu = result.device === 'gpu';
     child.once('exit', () => {
       if (this.child !== child) return;
       this.child = null;
@@ -174,6 +178,7 @@ export class Speech {
     if (this.listening) throw new Error('Я вже слухаю');
     const abort = new AbortController();
     this.listening = abort;
+    if (this.device === 'gpu') this.onGpu = true; // сервіс сам повертає модель на відеокарту з початком запису
     try {
       const body = { ...(Number.isFinite(waitSeconds) ? { wait_s: waitSeconds } : {}), ...(strict ? { strict: true } : {}) };
       const res = await this.#post('/listen', body, AbortSignal.any([abort.signal, AbortSignal.timeout(LISTEN_TIMEOUT_MS)]));
@@ -216,12 +221,14 @@ export class Speech {
     if (!this.ready || !this.usesGpu) return false;
     const res = await this.#post('/sleep', {}, AbortSignal.timeout(15_000));
     const data = await res.json().catch(() => ({}));
+    if (res.ok) this.onGpu = false;
     return !!data.freed;
   }
 
   /** Повернути модель на відеокарту заздалегідь, щоб наступний запис чи відповідь на неї не чекали. */
   async wake() {
     if (!this.ready || !this.usesGpu) return;
+    this.onGpu = true; // одразу: відтепер це місце у відеопам'яті вважаємо зайнятим
     await this.#post('/wake', {}, AbortSignal.timeout(30_000)).catch(() => {});
   }
 
