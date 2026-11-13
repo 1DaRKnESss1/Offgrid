@@ -156,3 +156,14 @@ test('пошук: оцінка збігу назв і вибір головно�
   fs.writeFileSync(path.join(dir, 'installer_setup.exe'), 'x'.repeat(9000));
   assert.equal(path.basename(gameExe({ name: 'Deadlock', dir })), 'deadlock.exe');
 });
+
+test('відкриття програми, яка вже працює: відповідь каже, що сталося насправді', async () => {
+  const { default: apps } = await import('../src/tools/apps.js');
+  const open = apps.find((t) => t.name === 'open_app');
+  const config = { apps: { discord: { name: 'Discord', exe: 'C:\Apps\Discord.exe' } } };
+  const csv = (n) => Array.from({ length: n }, () => '"Discord.exe","100","Console","1","50 K"').join('\r\n');
+  const os = (counts) => ({ settleMs: 1, launch: async () => true, run: async () => ({ ok: true, stdout: csv(counts.shift()) }) });
+  assert.match((await open.run({ app: 'discord' }, { config, os: os([0]) })).message, /^Discord відкрито$/);
+  assert.match((await open.run({ app: 'discord' }, { config, os: os([5, 5]) })).message, /уже відкрита/);
+  assert.match((await open.run({ app: 'discord' }, { config, os: os([1, 2]) })).message, /ще одне вікно/);
+});
