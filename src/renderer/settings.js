@@ -89,7 +89,7 @@
         h('input', { class: 'item-name', type: 'text', maxlength: 40, value: a.name, 'aria-label': 'Назва програми', disabled: !view.editable || !a.valid,
           onchange: (e) => request('updateApp', { key: a.key, name: e.target.value }) }),
         h('button', { type: 'button', class: 'icon', title: 'Прибрати зі списку', 'aria-label': `Прибрати ${a.name}`, disabled: !view.editable,
-          onclick: () => request('removeApp', { key: a.key }) }, '✕')),
+          onclick: () => request('removeApp', { key: a.key }) }, h('span', { class: 'ic ic-x' }))),
       h('div', { class: 'item-path', text: a.exe || 'файл не вказано', title: a.exe }),
       a.valid
         ? h('label', { class: 'check' },
@@ -101,7 +101,7 @@
       h('p', { class: 'help', text: 'Асистент може відкривати лише ці програми.' }),
       ...rows,
       view.moreApps ? h('p', { class: 'help', text: `Ще ${view.moreApps} записів не показано — їх видно лише у файлі налаштувань.` }) : null,
-      h('button', { type: 'button', class: 'add', disabled: !view.editable, onclick: () => request('addApp') }, '+ Додати програму…'),
+      h('button', { type: 'button', class: 'add', disabled: !view.editable, onclick: () => request('addApp') }, 'Додати програму…'),
     ];
   }
 
@@ -111,14 +111,14 @@
         h('input', { class: 'item-name', type: 'text', maxlength: 40, value: f.name, 'aria-label': 'Назва папки', disabled: !view.editable || !f.valid,
           onchange: (e) => request('updateFolder', { key: f.key, name: e.target.value }) }),
         h('button', { type: 'button', class: 'icon', title: 'Прибрати зі списку', 'aria-label': `Прибрати ${f.name}`, disabled: !view.editable,
-          onclick: () => request('removeFolder', { key: f.key }) }, '✕')),
+          onclick: () => request('removeFolder', { key: f.key }) }, h('span', { class: 'ic ic-x' }))),
       h('div', { class: 'item-path', text: f.path || 'шлях не вказано', title: f.path }),
       f.valid ? null : h('div', { class: 'item-bad', text: 'Не пройшла перевірку — асистент її не бачить' })));
     return [
       h('p', { class: 'help', text: 'Асистент шукає, відкриває й читає файли лише в цих папках (разом із вкладеними).' }),
       ...rows,
       view.moreFolders ? h('p', { class: 'help', text: `Ще ${view.moreFolders} записів не показано — їх видно лише у файлі налаштувань.` }) : null,
-      h('button', { type: 'button', class: 'add', disabled: !view.editable, onclick: () => request('addFolder') }, '+ Додати папку…'),
+      h('button', { type: 'button', class: 'add', disabled: !view.editable, onclick: () => request('addFolder') }, 'Додати папку…'),
     ];
   }
 
@@ -253,7 +253,7 @@
     const failed = entry.ok === false && kind === 'ok';
     const detail = entry.ok === false ? entry.error : entry.message;
     const args = describeArgs(entry.args);
-    return h('div', { class: 'entry' },
+    return h('div', { class: `entry ${failed ? 'bad' : kind}` },
       h('div', { class: 'entry-head' },
         h('span', { class: 'entry-time', text: formatTime(entry.time) }),
         h('span', { class: 'entry-tool', text: known(TOOL_NAMES, entry.tool) ?? String(entry.tool ?? '').slice(0, 40) }),

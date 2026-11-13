@@ -266,3 +266,89 @@ button.add { align-self: flex-start; }
 .entry-detail { font-size: 12.5px; overflow-wrap: anywhere; }
 .entry-args { font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
 body:not([data-view="chat"]) #taint { display: none; }
+
+/* ---------- Іконки ---------- */
+/* Малюються маскою, тож беруть колір тексту кнопки; у розмітці це просто <span class="ic ic-назва">. */
+.ic { display: inline-block; width: 16px; height: 16px; flex: none; vertical-align: -3px; background: currentColor;
+  -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat; }
+.ic-sliders { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1'/%3E%3Ccircle cx='15' cy='6' r='2'/%3E%3Ccircle cx='9' cy='12' r='2'/%3E%3Ccircle cx='17' cy='18' r='2'/%3E%3C/svg%3E"); }
+.ic-list { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01'/%3E%3C/svg%3E"); }
+.ic-new { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5'/%3E%3C/svg%3E"); }
+.ic-collapse { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 15l6-6 6 6'/%3E%3C/svg%3E"); }
+.ic-sound { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M11 5 6 9H3v6h3l5 4zM15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13'/%3E%3C/svg%3E"); }
+.ic-mute { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M11 5 6 9H3v6h3l5 4zM22 9l-6 6M16 9l6 6'/%3E%3C/svg%3E"); }
+.ic-mic { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v3'/%3E%3C/svg%3E"); }
+.ic-send { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 19V5M5 12l7-7 7 7'/%3E%3C/svg%3E"); }
+.ic-stop { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 7h10v10H7z'/%3E%3C/svg%3E"); }
+.ic-x { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18M6 6l12 12'/%3E%3C/svg%3E"); }
+.ic-back { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 18l-6-6 6-6'/%3E%3C/svg%3E"); }
+.ic-plus { --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 5v14M5 12h14'/%3E%3C/svg%3E"); }
+
+/* ---------- Кнопки заголовка й поля вводу ---------- */
+header { gap: 4px; }
+header .dot { margin-right: 4px; }
+header button, .view-head button { width: 30px; height: 30px; padding: 0; border-radius: 10px; display: grid; place-items: center;
+  background: transparent; border-color: transparent; color: var(--muted); transition: background .15s, color .15s; }
+header button:hover, .view-head button:hover { background: var(--surface-2); color: var(--text); }
+#speak[aria-pressed="false"] { color: #7d7d88; }
+#send, #mic { height: 38px; display: grid; place-items: center; }
+#send { border: 0; background: linear-gradient(135deg, #5aa9ff, #8f7bff); color: #fff; }
+#mic { color: var(--muted); }
+#mic.active { color: #fff; }
+
+/* ---------- Налаштування й журнал ---------- */
+.view-head { padding: 0 12px 10px 10px; gap: 6px; }
+.view-title { font-size: 15px; }
+.view-body { gap: 10px; padding: 0 14px 14px; }
+.tab-body { gap: 8px; padding-right: 4px; }
+.tab-body::-webkit-scrollbar, #log::-webkit-scrollbar { width: 6px; }
+.tab-body::-webkit-scrollbar-thumb, #log::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 3px; }
+
+/* вкладки — перемикач-сегмент */
+.tabs { gap: 2px; padding: 3px; border: 0; border-radius: 12px; background: rgba(255,255,255,.06); }
+.tab { border: 0; border-radius: 9px; padding: 5px 4px; font-size: 13px; color: var(--muted); transition: background .15s, color .15s; }
+.tab:hover { background: rgba(255,255,255,.06); }
+.tab[aria-selected="true"] { background: rgba(255,255,255,.14); color: var(--text); font-weight: 600; border: 0; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+
+/* розділи: маленький підпис, під ним рядки-картки */
+.group-title { margin: 10px 2px 0; font-size: 11px; font-weight: 600; letter-spacing: .7px; text-transform: uppercase; color: #8e8e9a; }
+.tab-body > .group-title:first-child { margin-top: 2px; }
+.help { font-size: 12px; line-height: 1.45; color: #8e8e9a; padding: 0 2px; }
+.item, .tab-body > .check, .hotkey-row { background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.07); border-radius: 12px; padding: 9px 12px; }
+.tab-body > .check { color: var(--text); font-size: 13px; gap: 8px; min-height: 40px; }
+.item .check { font-size: 12.5px; }
+.hotkey-row { padding: 7px 7px 7px 12px; }
+.hotkey { background: transparent; border: 0; padding: 0; }
+.hotkey-row button, button.add { border-radius: 9px; background: rgba(255,255,255,.10); border: 0; padding: 5px 12px; }
+.hotkey-row button:hover, button.add:hover { background: rgba(255,255,255,.17); }
+button.add { align-self: stretch; padding: 9px 12px; border-radius: 12px; color: var(--accent); background: rgba(108,182,255,.10); }
+button.add:hover { background: rgba(108,182,255,.18); }
+button.icon { width: 26px; height: 26px; padding: 0; border-radius: 8px; display: grid; place-items: center; }
+
+/* прапорці — перемикачі, праворуч у рядку */
+.check input[type="checkbox"] { appearance: none; -webkit-appearance: none; width: 34px; height: 20px; border-radius: 10px; margin: 0 0 0 auto; order: 9; flex: none;
+  background: rgba(255,255,255,.17); position: relative; cursor: pointer; transition: background .18s; }
+.check input[type="checkbox"]::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 2px rgba(0,0,0,.4); transition: transform .18s; }
+.check input[type="checkbox"]:checked { background: linear-gradient(135deg, #5aa9ff, #8f7bff); }
+.check input[type="checkbox"]:checked::after { transform: translateX(14px); }
+.check input[type="checkbox"]:disabled { opacity: .45; cursor: default; }
+.check select { margin-left: auto; border-radius: 8px; padding: 3px 8px; border-color: rgba(255,255,255,.10); }
+.check .item-name { flex: 0 1 120px; margin: 0; padding: 3px 8px; border-radius: 8px; background: rgba(0,0,0,.28); border-color: rgba(255,255,255,.10); }
+
+.chips { gap: 6px; }
+.chip { border-radius: 9px; padding: 3px 10px; border: 1px solid rgba(255,255,255,.09); background: rgba(255,255,255,.05); }
+.chip[aria-pressed="true"] { background: rgba(108,182,255,.20); color: #bfe0ff; border-color: rgba(108,182,255,.45); }
+.chip[aria-pressed="true"]::before { content: none; }
+
+/* журнал: кожна дія — картка з кольоровою смужкою результату */
+.entry { border: 1px solid rgba(255,255,255,.07); border-left: 3px solid rgba(255,255,255,.18); border-radius: 12px; background: rgba(255,255,255,.045); padding: 8px 12px; gap: 3px; }
+.entry.ok { border-left-color: var(--ok); }
+.entry.bad { border-left-color: var(--bad); }
+.entry-head { align-items: center; }
+.entry-tool { order: 1; font-size: 13px; }
+.badge { order: 2; border: 0; padding: 1px 8px; background: rgba(255,255,255,.09); }
+.badge.ok { background: rgba(108,203,95,.16); }
+.badge.bad { background: rgba(255,153,164,.16); }
+.entry-time { order: 3; font-size: 11px; }
+.entry-detail { color: #d6d6de; }

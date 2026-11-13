@@ -30,11 +30,11 @@
     <span id="state-label">Очікує</span>
     <span id="taint" hidden title="У цій розмові асистент бачив назви чи вміст файлів. Запис нотаток, пошук і відкриття сайтів тепер потребують твого дозволу. «Нова розмова» це скидає.">бачив файли</span>
     <span class="spacer"></span>
-    <button id="speak" type="button" hidden aria-pressed="true">🔊</button>
-    <button id="open-settings" type="button" title="Налаштування: програми, папки, типи файлів, клавіша" aria-label="Налаштування">⚙</button>
-    <button id="open-log" type="button" title="Журнал дій" aria-label="Журнал дій">📋</button>
-    <button id="new-chat" type="button" title="Нова розмова: очистити історію" aria-label="Нова розмова">↺</button>
-    <button id="close" type="button" title="Згорнути (Esc)" aria-label="Згорнути">✕</button>
+    <button id="speak" type="button" hidden aria-pressed="true"><span class="ic ic-sound"></span></button>
+    <button id="open-settings" type="button" title="Налаштування: програми, папки, типи файлів, клавіша" aria-label="Налаштування"><span class="ic ic-sliders"></span></button>
+    <button id="open-log" type="button" title="Журнал дій" aria-label="Журнал дій"><span class="ic ic-list"></span></button>
+    <button id="new-chat" type="button" title="Нова розмова: очистити історію" aria-label="Нова розмова"><span class="ic ic-new"></span></button>
+    <button id="close" type="button" title="Згорнути (Esc)" aria-label="Згорнути"><span class="ic ic-collapse"></span></button>
   </header>
 
   <div id="view-chat" class="view">
@@ -52,15 +52,15 @@
 
   <form id="form" autocomplete="off">
     <input id="input" type="text" maxlength="2000" placeholder="Напиши або скажи команду…" aria-label="Команда">
-    <button id="mic" type="button" hidden aria-label="Говорити">🎤</button>
-    <button id="send" type="submit" class="primary" title="Надіслати (Enter)">➤</button>
+    <button id="mic" type="button" hidden aria-label="Говорити"><span class="ic ic-mic"></span></button>
+    <button id="send" type="submit" class="primary" title="Надіслати (Enter)"><span class="ic ic-send"></span></button>
   </form>
   <footer id="hint"></footer>
   </div>
 
   <section id="view-settings" class="view" hidden aria-label="Налаштування">
     <div class="view-head">
-      <button id="settings-back" type="button">← Назад</button>
+      <button id="settings-back" type="button" title="Назад до розмови" aria-label="Назад"><span class="ic ic-back"></span></button>
       <span class="view-title">Налаштування</span>
     </div>
     <div id="settings-body" class="view-body"></div>
@@ -68,10 +68,10 @@
 
   <section id="view-log" class="view" hidden aria-label="Журнал дій">
     <div class="view-head">
-      <button id="log-back" type="button">← Назад</button>
+      <button id="log-back" type="button" title="Назад до розмови" aria-label="Назад"><span class="ic ic-back"></span></button>
       <span class="view-title">Журнал дій</span>
       <span class="spacer"></span>
-      <button id="log-refresh" type="button">Оновити</button>
+      <button id="log-refresh" type="button" title="Оновити" aria-label="Оновити"><span class="ic ic-new"></span></button>
     </div>
     <div id="log-body" class="view-body tab-body"></div>
   </section>

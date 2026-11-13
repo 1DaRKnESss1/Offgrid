@@ -39,14 +39,14 @@ function setState(next) {
 }
 
 function renderControls() {
-  sendBtn.textContent = busy ? '■' : '➤';
+  sendBtn.firstElementChild.className = busy ? 'ic ic-stop' : 'ic ic-send';
   sendBtn.title = busy ? 'Зупинити (Esc)' : 'Надіслати (Enter)';
   micBtn.hidden = voice === 'off';
   micBtn.disabled = voice !== 'ready' || (busy && state !== 'listening');
   micBtn.classList.toggle('active', state === 'listening');
   micBtn.title = state === 'listening' ? 'Досить, розпізнавай' : VOICE_TITLES[voice];
   speakBtn.hidden = voice === 'off';
-  speakBtn.textContent = speakReplies ? '🔊' : '🔇';
+  speakBtn.firstElementChild.className = speakReplies ? 'ic ic-sound' : 'ic ic-mute';
   speakBtn.title = speakReplies ? 'Озвучення відповідей увімкнено — натисни, щоб вимкнути' : 'Озвучення відповідей вимкнено — натисни, щоб увімкнути';
   speakBtn.setAttribute('aria-pressed', String(speakReplies));
 }
