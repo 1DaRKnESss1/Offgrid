@@ -790,7 +790,9 @@ async function devScreenshot() {
     send({ type: 'user', text: phrase });
     startTextTurn(phrase);
     await new Promise((r) => setTimeout(r, 500));
-    for (let i = 0; i < 240 && (turnActive || pendingConfirms.size > 0); i++) await new Promise((r) => setTimeout(r, 500));
+    // OFFGRID_SHOT_CONFIRM=1 — зняти сам запит дозволу, не чекаючи, доки він сплине
+    for (let i = 0; i < 240 && (turnActive || pendingConfirms.size > 0) && !(process.env.OFFGRID_SHOT_CONFIRM && pendingConfirms.size > 0); i++) await new Promise((r) => setTimeout(r, 500));
+    if (process.env.OFFGRID_SHOT_CONFIRM) await new Promise((r) => setTimeout(r, 1200));
   } else if (process.env.OFFGRID_SHOT_VIEW === 'island') {
     await new Promise((r) => setTimeout(r, Number(process.env.OFFGRID_SHOT_WAIT) || 800));
   } else if (process.env.OFFGRID_SHOT_VIEW) {
@@ -851,7 +853,15 @@ async function start() {
   if (!(await claimInstance())) { console.log('Offgrid уже запущено — показую його панель.'); process.exit(0); }
 
   // файли, папки й сайти відкриває оболонка — системним механізмом, як подвійне клацання в Провіднику
-  const toolOs = { ...nodeOs, openPath: (p) => ui.open(p), openUrl: (url) => ui.open(url) };
+  // allow — єдиний шлях, яким інструменти-пропозиції (tools/allow.js) змінюють білі списки: той самий запис із
+  // перевірками, що й на екрані налаштувань, і лише після дозволу користувача кнопкою
+  const ALLOW_CHANGES = new Set(['addApp', 'addFolder', 'setFileType']);
+  const toolOs = {
+    ...nodeOs,
+    openPath: (p) => ui.open(p),
+    openUrl: (url) => ui.open(url),
+    allow: (change, payload) => (ALLOW_CHANGES.has(change) ? changeSettings(change, payload) : { ok: false, error: 'Невідома зміна' }),
+  };
   config = loadConfig({ toolModes: TOOL_MODES }).config;
   agent = new Agent({
     config,

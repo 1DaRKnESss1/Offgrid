@@ -12,7 +12,7 @@
   // режим -> [ширина, висота, радіус]; ті самі числа стоять у style.css
   const SIZES = {
     idle: [150, 36, 18], hint: [230, 36, 18], listening: [340, 44, 22], busy: [240, 36, 18],
-    reply: [390, 66, 26], note: [370, 40, 20], confirm: [390, 136, 28], open: [400, 540, 26],
+    reply: [390, 66, 26], note: [370, 40, 20], confirm: [390, 136, 28], confirmlong: [400, 236, 28], open: [400, 540, 26],
   };
   const ALLOW_DELAY_MS = 800; // щоб клацання, націлене в інше вікно, не стало дозволом
   const TAIL_CHARS = 105;
@@ -27,7 +27,7 @@
 
   function mode() {
     if (open) return 'open';
-    if (confirm) return 'confirm';
+    if (confirm) return confirm.long ? 'confirmlong' : 'confirm';
     if (state === 'listening') return 'listening';
     if (state === 'speaking') return 'reply';
     if (state === 'thinking' || state === 'executing' || state === 'confirming') return reply && state === 'thinking' ? 'reply' : 'busy';
@@ -76,7 +76,7 @@
     const m = mode();
     body.dataset.mode = m;
     body.dataset.tone = m === 'note' ? note.tone : '';
-    if (m !== 'open' && m !== 'confirm') text.textContent = label(m);
+    if (m !== 'open' && !m.startsWith('confirm')) text.textContent = label(m);
     $('panel').inert = m !== 'open';
     claim(m);
   }
@@ -96,7 +96,7 @@
   }
 
   function showConfirm(event) {
-    confirm = { id: event.id };
+    confirm = { id: event.id, long: String(event.summary ?? '').length > 95 };
     $('pill-confirm-text').textContent = event.summary;
     $('pill-allow').disabled = true;
     clearTimeout(allowTimer);

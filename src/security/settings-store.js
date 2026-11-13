@@ -64,14 +64,14 @@ const accepted = (kind, key) => (config, warnings) => (Object.hasOwn(config[kind
 
 /** Правки. Кожна змінює raw і може повернути функцію перевірки результату. Помилки — через throw. */
 export const changes = {
-  addApp(raw, { exe }) {
+  addApp(raw, { exe, name }) {
     if (typeof exe !== 'string' || !/\.exe$/i.test(exe)) throw new Error('Потрібен файл програми з розширенням .exe');
     const apps = section(raw, 'apps', 'map');
     if (Object.keys(apps).length >= MAX_ITEMS) throw new Error('Забагато програм у списку');
     if (Object.values(apps).some((a) => samePath(resolveExe(a?.exe) ?? a?.exe, exe))) throw new Error('Ця програма вже є у списку');
     const base = path.basename(exe);
     const key = makeKey(base.replace(/\.exe$/i, ''), apps, 'app');
-    apps[key] = { name: cleanName(base.replace(/\.exe$/i, ''), key), exe: path.resolve(exe) };
+    apps[key] = { name: cleanName(name ?? base.replace(/\.exe$/i, ''), key), exe: path.resolve(exe) };
     return accepted('apps', key);
   },
   updateApp(raw, { key, name, closable }) {

@@ -47,8 +47,9 @@ export async function executeTool(name, rawArgs, session) {
   if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = null; } }
   if (!args || typeof args !== 'object' || Array.isArray(args)) args = {};
 
-  const ctx = { config, os: session.os };
   const taint = session.taint ?? 0;
+  // taint — щоб запит дозволу міг попередити: прохання могло прийти з прочитаного тексту
+  const ctx = { config, os: session.os, taint };
   const entry = { tool: tool.name, args, taint };
 
   try {

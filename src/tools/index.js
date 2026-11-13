@@ -7,6 +7,7 @@ import system from './system.js';
 import files from './files.js';
 import notes from './notes.js';
 import web from './web.js';
+import allow from './allow.js';
 
 // Підписи для панелі, коли інструмент нічого не «зробив», а лише щось дізнався
 export const TOOL_LABELS = {
@@ -19,7 +20,7 @@ export const TOOL_LABELS = {
   read_note: 'Прочитав нотатку',
 };
 
-export const ALL_TOOLS = [...system, ...apps, ...files, ...notes, ...web];
+export const ALL_TOOLS = [...system, ...apps, ...files, ...notes, ...web, ...allow];
 
 export function activeTools(config) {
   return ALL_TOOLS.filter((t) => !t.available || t.available(config));
