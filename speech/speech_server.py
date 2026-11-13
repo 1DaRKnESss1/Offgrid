@@ -107,6 +107,7 @@ MIN_THRESHOLD = 0.01       # мінімальний поріг гучності 
 MAX_THRESHOLD = 0.04       # вище не піднімаємо: інакше після шумного старту асистент «оглухне»
 PARTIAL_EVERY_S = 0.8      # як часто оновлювати проміжний текст
 MAX_SPEAK_CHARS = 1500
+WAKE_DEBUG = os.environ.get("OFFGRID_WAKE_DEBUG") == "1"  # застосунок цього ніколи не вмикає
 WAKE_SILENCE_S = 0.7       # у режимі очікування імені: стільки тиші закінчує фразу
 WAKE_MAX_S = 10            # …і довших фраз не чекаємо
 WAKE_MATCH = 0.78          # наскільки почуте слово має бути схожим на ім'я (1.0 — буква в букву)
@@ -426,6 +427,8 @@ def wake_listen(emit, names):
                     continue
                 text, accurate = _wake_quick(audio)
                 found, command = match_wake(text, names)
+                if WAKE_DEBUG:  # лише для scripts/wake-check.js: показати, що почуто й якою моделлю
+                    emit({"type": "heard", "text": text, "accurate": accurate, "found": found})
                 del text                          # фраза без імені далі не йде
                 if not found:
                     continue

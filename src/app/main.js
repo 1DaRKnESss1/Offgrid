@@ -277,7 +277,7 @@ function armWake() {
       if (res.cancelled) { wakeRetry = setTimeout(armWake, 300); return; }
       if (res.error) {
         if (speech?.ready) logAction({ tool: 'app', args: {}, decision: 'error', ok: false, error: `Очікування імені обірвалося: ${res.error}` });
-        wakeRetry = setTimeout(armWake, 30_000);
+        wakeRetry = setTimeout(armWake, 5_000);
         return;
       }
       if (turnActive) return;

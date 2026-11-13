@@ -183,7 +183,7 @@ export class Speech {
     if (this.device === 'gpu') this.onGpu = true; // сервіс сам повертає модель на відеокарту з початком запису
     try {
       const body = { ...(Number.isFinite(waitSeconds) ? { wait_s: waitSeconds } : {}), ...(strict ? { strict: true } : {}) };
-      const res = await this.#post('/listen', body, AbortSignal.any([abort.signal, AbortSignal.timeout(LISTEN_TIMEOUT_MS)]));
+      const res = await this.#openMic('/listen', body, AbortSignal.any([abort.signal, AbortSignal.timeout(LISTEN_TIMEOUT_MS)]));
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Мовний сервіс: помилка ${res.status}`);
       const decoder = new TextDecoder();
       let buffer = '';
@@ -213,18 +213,30 @@ export class Speech {
     }
   }
 
+  // Починає запис. Попередній запис сервіс відпускає за якусь мить після своєї останньої відповіді, тож
+  // «мікрофон зайнятий» одразу після нього — не помилка: трохи чекаємо й пробуємо знову.
+  async #openMic(path, body, signal) {
+    for (let attempt = 0; ; attempt++) {
+      const res = await this.#post(path, body, signal);
+      if (res.status !== 409 || attempt >= 40) return res;
+      await res.arrayBuffer().catch(() => {});
+      await new Promise((r) => setTimeout(r, 75));
+      signal.throwIfAborted();
+    }
+  }
+
   /**
    * Чекає, доки хтось назве асистента на ім'я. Повертає { text } — решту фрази після імені (може бути порожня),
    * { cancelled: true } або кидає помилку. Усе, що сказано без імені, сервіс викидає сам і сюди не передає.
    */
-  async waitForWake(names) {
+  async waitForWake(names, onEvent = null) {
     if (!this.ready) throw new Error('Голос зараз недоступний');
     if (this.listening) throw new Error('Я вже слухаю');
     const abort = new AbortController();
     this.listening = abort;
     this.waiting = true;
     try {
-      const res = await this.#post('/wake-listen', { names }, abort.signal);
+      const res = await this.#openMic('/wake-listen', { names }, abort.signal);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `Мовний сервіс: помилка ${res.status}`);
       const decoder = new TextDecoder();
       let buffer = '';
@@ -237,6 +249,7 @@ export class Speech {
           if (!line) continue;
           let event;
           try { event = JSON.parse(line); } catch { continue; }
+          if (event.type === 'heard') { onEvent?.(event); continue; }
           if (event.type === 'wake') {
             if (this.device === 'gpu') this.onGpu = event.gpu_loaded === true;
             return { text: String(event.text ?? '').trim() };
