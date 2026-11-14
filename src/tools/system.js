@@ -103,6 +103,13 @@ export default [
       if (!Object.hasOwn(VOLUME_KEYS, action)) return { ok: false, error: `Невідома дія «${action}»` };
       // у скрипт потрапляють лише числа з таблиць вище, не текст від моделі
       const presses = action === 'mute' ? 1 : (Object.hasOwn(VOLUME_STEPS, amount) ? VOLUME_STEPS[amount] : VOLUME_STEPS.medium);
+      // Гучність міняє оболонка командою до самої системи. Старий спосіб (нижче) «натискав клавішу» у вікні з
+      // фокусом — і в деяких програмах це друкувало знаки питання замість зміни гучності; він лишився тільки
+      // для запуску без оболонки (тести, перевірочні скрипти).
+      if (typeof sys.volume === 'function') {
+        if (!(await sys.volume(action, presses))) return { ok: false, error: 'Не вдалося змінити гучність' };
+        return { ok: true, message: action === 'mute' ? 'Звук вимкнено або знову увімкнено' : `Гучність ${action === 'up' ? 'збільшено' : 'зменшено'} приблизно на ${presses * 2}%` };
+      }
       const script = `$w = New-Object -ComObject WScript.Shell; 1..${presses} | ForEach-Object { $w.SendKeys([char]${VOLUME_KEYS[action]}) }`;
       const r = await sys.run(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script]);
       if (!r.ok) return { ok: false, error: 'Не вдалося змінити гучність' };

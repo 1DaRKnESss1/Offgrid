@@ -84,15 +84,29 @@ public static class Native {
         keybd_event(0x43, 0, 2, UIntPtr.Zero); keybd_event(0x11, 0, 2, UIntPtr.Zero);
     }
     public static bool IsForeground(IntPtr hWnd) { return GetForegroundWindow() == hWnd; }
-    // Presses and releases one of the media / volume keys (0xAD..0xB3); nothing else can be typed this way
-    public static bool TapMediaKey(int vk) {
-        if (vk < 0xAD || vk > 0xB3) return false;
-        keybd_event((byte)vk, 0, 0, UIntPtr.Zero); keybd_event((byte)vk, 0, 2, UIntPtr.Zero);
-        return true;
-    }
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hWnd, StringBuilder name, int max);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string cls, string name);
+    // Media and volume commands go straight to the Windows shell as WM_APPCOMMAND, not as key presses: a key
+    // press lands in whatever window has the focus (our own panel swallowed it, other windows printed "?").
+    // vk is the virtual key the command corresponds to (0xAD..0xB3, except "stop"); nothing else is accepted.
+    public static bool TapMediaKey(int vk) {
+        int cmd;
+        switch (vk) {
+            case 0xAD: cmd = 8; break;   // mute
+            case 0xAE: cmd = 9; break;   // volume down
+            case 0xAF: cmd = 10; break;  // volume up
+            case 0xB0: cmd = 11; break;  // next track
+            case 0xB1: cmd = 12; break;  // previous track
+            case 0xB3: cmd = 14; break;  // play / pause
+            default: return false;
+        }
+        IntPtr shell = FindWindow("Shell_TrayWnd", null);
+        if (shell == IntPtr.Zero) return false;
+        SendMessage(shell, 0x0319, shell, (IntPtr)(cmd << 16));
+        return true;
+    }
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
     [StructLayout(LayoutKind.Sequential)] struct BlurBehind { public int flags; public bool enable; public IntPtr region; public bool transition; }
@@ -181,7 +195,7 @@ $wv.DefaultBackgroundColor = [System.Drawing.Color]::Transparent
 $props = New-Object Microsoft.Web.WebView2.WinForms.CoreWebView2CreationProperties
 $props.UserDataFolder = $DataDir
 # The video card's memory belongs to the language model: the island is drawn on the CPU (and still runs at full frame rate)
-$props.AdditionalBrowserArguments = "--disable-gpu --disable-features=msSmartScreenProtection"
+$props.AdditionalBrowserArguments = "--disable-gpu --disable-features=msSmartScreenProtection,HardwareMediaKeyHandling"
 $wv.CreationProperties = $props
 $form.Controls.Add($wv)
 
@@ -402,7 +416,7 @@ function Invoke-Command-Line([string]$line) {
       $bmp.Dispose()
     }
     "key" {
-      $n = [Math]::Max(1, [Math]::Min(10, [int]$cmd.times))
+      $n = [Math]::Max(1, [Math]::Min(25, [int]$cmd.times))
       $ok = $true
       for ($i = 0; $i -lt $n; $i++) { if (-not [Native]::TapMediaKey([int]$cmd.vk)) { $ok = $false; break } }
       Emit @{ t = "reply"; id = $cmd.id; ok = $ok }

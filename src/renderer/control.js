@@ -48,7 +48,7 @@
 
   function render() {
     if (document.body.dataset.view !== 'control') return;
-    root.replaceChildren(
+    root.replaceChildren(...[
       h('div', { class: 'group-title', text: 'Музика й відео' }),
       h('div', { class: 'tiles three' }, big('ic-prev', 'Назад', 'previous_track'), big('ic-play', 'Пауза / далі', 'play_pause', 'accent'), big('ic-next', 'Наступний', 'next_track')),
       h('div', { class: 'tiles three' }, big('ic-minus', 'Тихіше', 'volume_down'), big('ic-mute', 'Без звуку', 'mute'), big('ic-plus', 'Гучніше', 'volume_up')),
@@ -77,7 +77,7 @@
       h('div', { class: 'group-title', text: 'Асистент' }),
       h('div', { class: 'tiles two' }, big('ic-moon', 'Звільнити відеопам\'ять', 'sleep'), big('ic-new', 'Нова розмова', 'new_chat')),
       message ? h('div', { class: 'control-message', role: 'status', text: message }) : null,
-    );
+    ].filter(Boolean));
   }
 
   window.addEventListener('offgrid-event', (e) => {
