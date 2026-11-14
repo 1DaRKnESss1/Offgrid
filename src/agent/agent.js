@@ -3,7 +3,7 @@ import { chat } from './ollama.js';
 import { systemPrompt } from './prompt.js';
 import { toolSchemas, TOOL_LABELS } from '../tools/index.js';
 import { executeTool, toolMessageContent } from '../security/policy.js';
-import { stripFiller, announcesIntent, asksAboutScreen, styleHint } from './tone.js';
+import { stripFiller, announcesIntent, styleHint, requiredTool } from './tone.js';
 
 const MAX_STEPS = 6;
 const MAX_CALLS_PER_STEP = 4;
@@ -17,7 +17,6 @@ const MAX_INPUT_CHARS = 2000;
 const IDLE_RESET_MS = 15 * 60 * 1000;
 const CANCELLED = 'Скасовано';
 // Якщо модель лише описала намір («зараз перевірю час»), а інструмент не викликала, — один раз на запит кажемо їй діяти
-const SCREEN_NUDGE = 'Ти не бачиш екран, доки не викличеш інструмент look_at_screen. Виклич його зараз і розкажи, що він показав.';
 const NUDGE = '(Асистенте, ти лише описав, що збираєшся зробити, але не зробив цього. Виклич потрібний інструмент просто зараз, без пояснень.)';
 const REMINDER = '\n\n(Нагадування асистенту: якщо це прохання щось зробити на комп’ютері або дізнатися час, стан системи чи файли — спершу виклич інструмент. Не кажи, що щось зроблено чи відомо, без результату інструмента в цьому ж ході. На привітання, подяку й просту балачку відповідай одразу, без інструментів.)';
 
@@ -130,14 +129,18 @@ export class Agent {
           if (streamed) emit({ type: 'reply-reset' });
           continue;
         }
-        if (calls.length === 0 && !nudged && toolsCalled === 0 && toolNames.includes('look_at_screen') && asksAboutScreen(input)) {
-          // питали про екран, а модель відповіла, не подивившись: це вигадка — відкидаємо й просимо подивитися
+        // Прохання, для яких інструмент потрібен НАПЕВНО (виділений текст, екран, час): сама модель цього не бачить
+        // і не знає. Якщо вона відповіла без інструмента — це вигадка або зайве перепитування. Спершу один раз
+        // нагадуємо; якщо не допомогло (або нагадування вже витрачено) — потрібний інструмент викликає сам код.
+        const route = calls.length === 0 && toolsCalled === 0 ? requiredTool(input, toolNames) : null;
+        if (route && !nudged && route.nudge) {
           nudged = true;
-          nudge = [{ role: 'assistant', content }, { role: 'user', content: SCREEN_NUDGE }];
+          nudge = [{ role: 'assistant', content }, { role: 'user', content: route.nudge }];
           if (streamed) emit({ type: 'reply-reset' });
           continue;
         }
-        messages.push({ role: 'assistant', content, ...(calls.length ? { tool_calls: calls } : {}) });
+        if (route) calls.push({ function: { name: route.tool, arguments: route.args } });
+        messages.push({ role: 'assistant', content: route ? '' : content, ...(calls.length ? { tool_calls: calls } : {}) });
         if (calls.length === 0) return content || 'Не маю відповіді.';
         // текст перед викликом інструмента — не відповідь, а «вступ»: з екрана його прибираємо
         if (streamed) emit({ type: 'reply-reset' });

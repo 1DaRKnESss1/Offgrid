@@ -30,12 +30,17 @@ const CASES = [
   ['відкрий ютуб', 'open_website'],
   ['знайди в інтернеті погоду в Харкові', 'search_web'],
   ['відкрий папку документи', 'open_folder'],
+  ['постав музику на паузу', 'control_pc'],
+  ['згорни всі вікна', 'control_pc'],
+  ['нагадай через десять хвилин зняти чайник', 'timers'],
+  ['переклади виділений текст англійською', 'edit_selection'],
+  ['виправ помилки у виділеному', 'edit_selection'],
   ['привіт, як справи?', null],
   ['дякую', null],
 ];
 
 const repeats = Math.max(1, Number(process.argv[2]) || 3);
-const os = { launch: async () => true, run: async () => ({ ok: true, stdout: '' }), openPath: async () => true, openUrl: async () => true, openShellFolder: async () => true };
+const os = { pc: async () => ({ ok: true, message: 'ок' }), editSelection: async () => ({ ok: true, message: 'Готово' }), timers: { add: () => ({ ok: true, item: { label: '', due: Date.now() + 60000 } }), list: () => [], cancel: () => [] }, launch: async () => true, run: async () => ({ ok: true, stdout: '' }), openPath: async () => true, openUrl: async () => true, openShellFolder: async () => true };
 let pass = 0, total = 0;
 const fails = [];
 try {

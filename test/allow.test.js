@@ -271,3 +271,21 @@ test('керування комп\'ютером і таймери: лише ді
   assert.equal((await executeTool('timers', { action: 'cancel', text: 'плиту' }, s)).result.ok, true);
   s.os.timers.stop();
 });
+
+test('виділений текст: у розмову не потрапляє, а в «забрудненій» розмові потрібен дозвіл', async () => {
+  const { needsConfirm } = await import('../src/security/policy.js');
+  const tool = ALL_TOOLS.find((x) => x.name === 'edit_selection');
+  assert.equal(tool.untrusted, undefined);
+  assert.equal(needsConfirm(tool, { confirm: {} }, 0), false);
+  assert.equal(needsConfirm(tool, { confirm: {} }, 1), true);
+  const s = session();
+  const seen = [];
+  s.os.editSelection = async (task, replace) => { seen.push([task, replace]); return { ok: true, message: 'Готово: результат у буфері обміну (12 знаків)' }; };
+  const { result, untrusted } = await executeTool('edit_selection', { task: 'переклади англійською' }, s);
+  assert.equal(result.ok, true);
+  assert.equal(untrusted, false);
+  assert.equal(s.taint, 0);
+  assert.deepEqual(seen, [['переклади англійською', false]]);
+  assert.deepEqual(Object.keys(result).sort(), ['message', 'ok'], 'жодного стороннього тексту в результаті');
+  assert.equal((await executeTool('edit_selection', { task: '' }, s)).result.ok, false);
+});

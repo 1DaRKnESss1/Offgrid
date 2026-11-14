@@ -22,7 +22,7 @@ export const OPENABLE = new Set(FILE_TYPE_GROUPS.flatMap((g) => g.types));
 // Читати вміст можна лише з простих текстових форматів
 export const READABLE = new Set(['.txt', '.md', '.csv', '.log', '.json', '.xml', '.ini', '.yml', '.yaml']);
 const CONFIRM_MODES = ['never', 'content', 'tainted', 'always'];
-const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'speakReplies', 'followUp', 'wake', 'gpuLayers', 'idleUnloadMinutes', 'yieldToOtherApps', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'confirm']);
+const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'dictateHotkey', 'speakReplies', 'followUp', 'wake', 'gpuLayers', 'idleUnloadMinutes', 'yieldToOtherApps', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'confirm']);
 
 const WINDIR = process.env.SystemRoot ?? 'C:\\Windows';
 
@@ -193,6 +193,12 @@ export function validateConfig(raw, defaults, toolModes = null) {
     else warn(`ollamaUrl «${raw.ollamaUrl}» не локальна адреса — використано ${defaults.ollamaUrl}`);
   }
 
+  // клавіша диктування: порожній рядок вимикає її
+  cfg.dictateHotkey = typeof defaults.dictateHotkey === 'string' ? defaults.dictateHotkey : '';
+  if (raw.dictateHotkey !== undefined) {
+    if (raw.dictateHotkey === '' || (typeof raw.dictateHotkey === 'string' && isValidHotkey(raw.dictateHotkey.trim()))) cfg.dictateHotkey = raw.dictateHotkey.trim();
+    else warn(`dictateHotkey: «${raw.dictateHotkey}» не годиться — використано ${cfg.dictateHotkey || 'без клавіші'}`);
+  }
   cfg.hotkey = defaults.hotkey;
   if (raw.hotkey !== undefined) {
     if (typeof raw.hotkey === 'string' && isValidHotkey(raw.hotkey.trim())) cfg.hotkey = raw.hotkey.trim();

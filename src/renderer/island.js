@@ -23,6 +23,7 @@
   let reply = '';          // відповідь, яку модель пише / щойно сказала
   let tool = '';           // остання виконана дія
   let note = null;         // { text, tone } — коротке повідомлення на кілька секунд
+  let dictating = false;
   let timers = [];         // [{ id, label, due }] — найближчий показуємо в спокої
   let noteTimer = null, lingerTimer = null, lingering = false, allowTimer = null;
 
@@ -55,7 +56,7 @@
 
   function label(m) {
     switch (m) {
-      case 'listening': return live || 'Слухаю…';
+      case 'listening': return live || (dictating ? 'Диктуй — надрукую, де курсор…' : 'Слухаю…');
       case 'busy': return tool || (state === 'executing' ? 'Виконую…' : 'Думаю…');
       case 'reply': return tail(reply);
       case 'note': return note.text;
@@ -136,6 +137,7 @@
       case 'confirm-done': if (confirm?.id === event.id) confirm = null; break;
       case 'wake': wake = { armed: event.armed === true, name: String(event.name ?? '') }; break;
       case 'asleep': asleep = event.value === true; break;
+      case 'dictation': dictating = event.on === true; break;
       case 'timers': timers = Array.isArray(event.list) ? event.list : []; break;
       case 'timer-fired': note = null; open ? null : showNote(event.text, 'warn', 15000); return;
       case 'reset': reply = ''; tool = ''; note = null; confirm = null; lingering = false; break;

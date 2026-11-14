@@ -264,3 +264,32 @@ test('манера співрозмовника: розкута, ввічлив�
   // слова всередині інших слів не рахуються: «шо» в «шоколад», «ок» в «окуляри»
   assert.doesNotMatch(styleHint('знайди файл про шоколад і окуляри для роботи'), /розкуто/);
 });
+
+test('диктування: вмикається і вимикається лише окремою короткою фразою', async () => {
+  const { startsDictation, endsDictation } = await import('../src/agent/tone.js');
+  for (const q of ['диктування', 'Диктування.', 'режим диктування', 'увімкни диктування', 'друкуй під диктовку']) assert.equal(startsDictation(q), true, q);
+  for (const q of ['запиши нотатку про диктування', 'що таке диктування', 'відкрий блокнот']) assert.equal(startsDictation(q), false, q);
+  for (const q of ['кінець диктування', 'Стоп диктування.', 'стоп', 'Кінець.']) assert.equal(endsDictation(q), true, q);
+  for (const q of ['на цьому кінець історії', 'стоп-кран зірвали']) assert.equal(endsDictation(q), false, q);
+});
+
+test('«зробив» без жодного інструмента — теж порожні слова', async () => {
+  const { announcesIntent } = await import('../src/agent/tone.js');
+  for (const r of ['Зробив тихіше.', 'Зроблено. Гучність зменшена.', 'Згортаю всі вікна.', 'Перекладу виділений текст англійською.',
+    'Готово, поставив таймер.', 'Гаразд, викликаю редагування виділеного тексту для виправлення помилок.']) assert.equal(announcesIntent(r, [], false), true, r);
+  // після справжнього виклику інструмента звіт «зробив» — це нормальна відповідь
+  for (const r of ['Зробив тихіше.', 'Зроблено. Гучність зменшена.', 'Поставив таймер на 5 хвилин.']) assert.equal(announcesIntent(r, [], true), false, r);
+  for (const r of ['Не можу цього зробити.', 'Зараз пів на п\'яту.', 'Можу перекласти, якщо виділиш текст.', 'Що саме згорнути?', 'Привіт. Слухаю.', 'Будь ласка.']) assert.equal(announcesIntent(r, [], false), false, r);
+});
+
+test('прохання, де інструмент потрібен напевно: екран, виділений текст, час', async () => {
+  const { requiredTool } = await import('../src/agent/tone.js');
+  const all = ['edit_selection', 'look_at_screen', 'get_time'];
+  assert.equal(requiredTool('переклади виділений текст англійською', all).tool, 'edit_selection');
+  assert.equal(requiredTool('що в мене на екрані?', all).tool, 'look_at_screen');
+  assert.equal(requiredTool('котра година?', all).tool, 'get_time');
+  assert.equal(requiredTool('яке сьогодні число', all).nudge, undefined, 'час питаємо одразу, без нагадування');
+  assert.equal(requiredTool('відкрий блокнот', all), null);
+  assert.equal(requiredTool('нагадай о котрій годині в мене зустріч, вона записана в нотатках про роботу на цей тиждень', all), null);
+  assert.equal(requiredTool('котра година?', []), null, 'інструмента немає — нічого не нав\'язуємо');
+});

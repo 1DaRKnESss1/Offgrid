@@ -14,7 +14,8 @@
     find_files: 'Пошук файлів', list_folder: 'Перегляд папки', open_file: 'Відкрити файл', read_text_file: 'Прочитати файл',
     write_note: 'Записати нотатку', list_notes: 'Список нотаток', read_note: 'Прочитати нотатку', delete_note: 'Видалити нотатку',
     search_web: 'Пошук в інтернеті', open_website: 'Відкрити сайт', allow_app: 'Дозволити програму', allow_folder: 'Дозволити папку',
-    allow_file_type: 'Дозволити тип файлів', look_at_screen: 'Погляд на екран', control_pc: 'Керування комп\'ютером', timers: 'Таймери',
+    allow_file_type: 'Дозволити тип файлів', look_at_screen: 'Погляд на екран', control_pc: 'Керування комп\'ютером', timers: 'Таймери', dictation: 'Диктування',
+    edit_selection: 'Виділений текст',
   };
   const DECISIONS = {
     auto: ['виконано', 'ok'], confirmed: ['з твого дозволу', 'ok'], user: ['змінено тобою', 'ok'],

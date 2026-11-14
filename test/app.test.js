@@ -176,9 +176,18 @@ test('агент: якщо модель лише пообіцяла, він од
     await new Promise((r) => stubborn.listen(0, '127.0.0.1', r));
     const cfg2 = validateConfig({ ...defaults, ollamaUrl: `http://127.0.0.1:${stubborn.address().port}`, speech: { enabled: false }, apps: {}, folders: {} }, defaults).config;
     const agent2 = new Agent({ config: cfg2, os: {}, confirm: async () => false });
-    assert.equal(await agent2.ask('котра година?'), 'Зараз перевірю.');
-    assert.equal(step, 2);
-    stubborn.close();
+    try {
+      // на загальне прохання впертій моделі лишаємо останнє слово після однієї вимоги
+      assert.equal(await agent2.ask('зроби щось корисне'), 'Зараз перевірю.');
+      assert.equal(step, 2);
+      // а там, де інструмент потрібен напевно (час), його викликає сам код — і лише раз
+      step = 0;
+      const seen = [];
+      const agent3 = new Agent({ config: cfg2, os: {}, confirm: async () => false, emit: (e) => { if (e.type === 'tool') seen.push(e.name); } });
+      await agent3.ask('котра година?');
+      assert.deepEqual(seen, ['get_time']);
+      assert.equal(step, 3);
+    } finally { stubborn.close(); }
   } finally {
     fake.close();
     fs.rmSync(new URL('./.tmp/app-test', import.meta.url), { recursive: true, force: true });

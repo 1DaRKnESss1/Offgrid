@@ -3,7 +3,7 @@
 # trusts: PowerShell + .NET WinForms + the WebView2 runtime that ships with Windows 11.
 #
 # It has no logic of its own. The Node process (src/app/main.js) starts it and drives it:
-#   Node -> shell : one JSON object per line on stdin   (navigate, show, place, tray, menu, hotkey, pick, open, shot, screen, key, desktop, quit)
+#   Node -> shell : one JSON object per line on stdin   (navigate, show, place, tray, menu, hotkey, pick, open, shot, screen, key, desktop, type, copy, clip, quit)
 # The panel address (with its one-time key) arrives through stdin, never on the command line, so that other
 # programs cannot read it from the process list.
 #   shell -> Node : one JSON object per line on stdout  (ready, hotkey, tray-click, menu, blur, focus, moved, ...)
@@ -61,6 +61,29 @@ public static class Native {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] static extern bool ReleaseCapture();
     [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+    [StructLayout(LayoutKind.Sequential)] struct KEYBDINPUT { public ushort vk; public ushort scan; public uint flags; public uint time; public IntPtr extra; }
+    [StructLayout(LayoutKind.Explicit, Size = 40)] struct INPUT { [FieldOffset(0)] public uint type; [FieldOffset(8)] public KEYBDINPUT ki; }
+    [DllImport("user32.dll")] static extern uint SendInput(uint count, INPUT[] inputs, int size);
+    // Types text into whatever window has the keyboard, character by character (as Unicode, independent of the
+    // keyboard layout). Control characters are dropped: this can never press Enter, Tab or a shortcut.
+    public static bool TypeText(string text) {
+        if (IntPtr.Size != 8 || text == null) return false;
+        System.Collections.Generic.List<INPUT> list = new System.Collections.Generic.List<INPUT>();
+        foreach (char ch in text) {
+            if (ch < 32 || ch == 127) continue;
+            INPUT down = new INPUT(); down.type = 1; down.ki.scan = ch; down.ki.flags = 4;
+            INPUT up = down; up.ki.flags = 6;
+            list.Add(down); list.Add(up);
+        }
+        if (list.Count == 0) return true;
+        return SendInput((uint)list.Count, list.ToArray(), 40) == list.Count;
+    }
+    // Ctrl+C in the focused window: used only to read the text the user has selected
+    public static void PressCopy() {
+        keybd_event(0x11, 0, 0, UIntPtr.Zero); keybd_event(0x43, 0, 0, UIntPtr.Zero);
+        keybd_event(0x43, 0, 2, UIntPtr.Zero); keybd_event(0x11, 0, 2, UIntPtr.Zero);
+    }
+    public static bool IsForeground(IntPtr hWnd) { return GetForegroundWindow() == hWnd; }
     // Presses and releases one of the media / volume keys (0xAD..0xB3); nothing else can be typed this way
     public static bool TapMediaKey(int vk) {
         if (vk < 0xAD || vk > 0xB3) return false;
@@ -276,6 +299,8 @@ function Set-Menu($items) {
 # ---------- global hotkey ----------
 $hotkey = New-Object HotkeyWindow
 $hotkey.add_Pressed({ Emit @{ t = "hotkey" } })
+$hotkey2 = New-Object HotkeyWindow   # the dictation key
+$hotkey2.add_Pressed({ Emit @{ t = "hotkey2" } })
 
 # ---------- commands from Node ----------
 function Invoke-Command-Line([string]$line) {
@@ -291,8 +316,37 @@ function Invoke-Command-Line([string]$line) {
     "place"  { Place-Window $cmd.x $cmd.y }
     "tray"   { if ($cmd.icon) { Set-TrayIcon $cmd.icon }; if ($cmd.tip) { $t = [string]$cmd.tip; if ($t.Length -gt 63) { $t = $t.Substring(0, 63) }; $tray.Text = $t } }
     "menu"   { Set-Menu $cmd.items }
-    "hotkey" { $ok = $hotkey.Register([uint32]$cmd.mods, [uint32]$cmd.vk); Emit @{ t = "reply"; id = $cmd.id; ok = [bool]$ok } }
-    "unhotkey" { $hotkey.Unregister(); Emit @{ t = "reply"; id = $cmd.id; ok = $true } }
+    "hotkey" { $hk = $hotkey; if ($cmd.slot -eq 2) { $hk = $hotkey2 }; $ok = $hk.Register([uint32]$cmd.mods, [uint32]$cmd.vk); Emit @{ t = "reply"; id = $cmd.id; ok = [bool]$ok } }
+    "unhotkey" { if ($cmd.slot -eq 2) { $hotkey2.Unregister() } else { $hotkey.Unregister() }; Emit @{ t = "reply"; id = $cmd.id; ok = $true } }
+    "type" {
+      # never into our own window: dictation is meant for other programs
+      $ok = $false
+      if (-not [Native]::IsForeground($form.Handle)) { $ok = [Native]::TypeText([string]$cmd.text) }
+      Emit @{ t = "reply"; id = $cmd.id; ok = [bool]$ok }
+    }
+    "copy" {
+      # The text selected in the focused window. The clipboard is emptied first so that an old value is not
+      # mistaken for the selection; if nothing was selected, the old text is put back.
+      $text = ""
+      if (-not [Native]::IsForeground($form.Handle)) {
+        $old = ""
+        try { $old = [System.Windows.Forms.Clipboard]::GetText() } catch { }
+        try { [System.Windows.Forms.Clipboard]::Clear() } catch { }
+        [Native]::PressCopy()
+        for ($i = 0; $i -lt 15 -and -not $text; $i++) {
+          Start-Sleep -Milliseconds 40
+          [System.Windows.Forms.Application]::DoEvents()
+          try { $text = [System.Windows.Forms.Clipboard]::GetText() } catch { }
+        }
+        if (-not $text -and $old) { try { [System.Windows.Forms.Clipboard]::SetText($old) } catch { } }
+      }
+      Emit @{ t = "reply"; id = $cmd.id; ok = $true; text = $text }
+    }
+    "clip" {
+      $ok = $true
+      try { [System.Windows.Forms.Clipboard]::SetText([string]$cmd.text) } catch { $ok = $false }
+      Emit @{ t = "reply"; id = $cmd.id; ok = $ok }
+    }
     "pick" {
       $path = $null
       if ($cmd.kind -eq "exe") {
@@ -366,7 +420,7 @@ function Invoke-Command-Line([string]$line) {
 function Stop-Shell {
   if ($script:quitting) { return }
   $script:quitting = $true
-  try { $hotkey.Unregister() } catch { }
+  try { $hotkey.Unregister(); $hotkey2.Unregister() } catch { }
   try { $tray.Visible = $false; $tray.Dispose() } catch { }
   try { $form.Close() } catch { }
   [System.Windows.Forms.Application]::ExitThread()

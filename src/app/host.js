@@ -121,6 +121,7 @@ export class Host extends EventEmitter {
       case 'focus': this.focused = true; this.emit('focus'); break;
       case 'blur': this.focused = false; this.emit('blur'); break;
       case 'hotkey': this.emit('hotkey'); break;
+      case 'hotkey2': this.emit('hotkey2'); break;
       case 'tray-click': this.emit('tray-click'); break;
       case 'menu': this.emit('menu', String(msg.id)); break;
       case 'moved': if (Number.isInteger(msg.x) && Number.isInteger(msg.y)) this.emit('moved', { x: msg.x, y: msg.y }); break;
@@ -163,13 +164,22 @@ export class Host extends EventEmitter {
   setMenu(items) { this.#send({ c: 'menu', items }); }
 
   /** Реєструє глобальну клавішу. Повертає true, якщо Windows її віддала. */
-  async registerHotkey(accelerator) {
+  /** slot 1 — клавіша розмови, slot 2 — клавіша диктування (подія 'hotkey2'). */
+  async registerHotkey(accelerator, slot = 1) {
     const key = parseHotkey(accelerator);
     if (!key) return false;
-    return (await this.#ask({ c: 'hotkey', ...key })).ok === true;
+    return (await this.#ask({ c: 'hotkey', slot, ...key })).ok === true;
   }
 
-  async unregisterHotkey() { await this.#ask({ c: 'unhotkey' }); }
+  async unregisterHotkey(slot = 1) { await this.#ask({ c: 'unhotkey', slot }); }
+
+  /** Друкує текст у вікно, що зараз має клавіатуру (не у власне). Жодних Enter чи сполучень — лише знаки. */
+  async type(text) { return (await this.#ask({ c: 'type', text: String(text).slice(0, 6000) })).ok === true; }
+
+  /** Текст, виділений у вікні, що зараз має клавіатуру (через буфер обміну). '' — нічого не виділено. */
+  async copySelection() { const r = await this.#ask({ c: 'copy' }); return typeof r.text === 'string' ? r.text : ''; }
+
+  async setClipboard(text) { return (await this.#ask({ c: 'clip', text: String(text) })).ok === true; }
 
   /** Системне вікно вибору програми ('exe') або папки ('dir'). Повертає шлях або null. */
   async pick(kind, title) {
