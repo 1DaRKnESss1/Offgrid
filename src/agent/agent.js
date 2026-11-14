@@ -3,7 +3,7 @@ import { chat } from './ollama.js';
 import { systemPrompt } from './prompt.js';
 import { toolSchemas, TOOL_LABELS } from '../tools/index.js';
 import { executeTool, toolMessageContent } from '../security/policy.js';
-import { stripFiller, announcesIntent, asksAboutScreen } from './tone.js';
+import { stripFiller, announcesIntent, asksAboutScreen, styleHint } from './tone.js';
 
 const MAX_STEPS = 6;
 const MAX_CALLS_PER_STEP = 4;
@@ -115,7 +115,7 @@ export class Agent {
         // Нагадування додаємо лише в запит (не в історію) і лише до останнього повідомлення користувача:
         // посеред розмови модель інакше схильна «розповісти», що зробила, не викликавши інструмент.
         const last = messages.findLastIndex((m) => m.role === 'user');
-        const request = messages.map((m, i) => (i === last ? { ...m, content: m.content + REMINDER } : m));
+        const request = messages.map((m, i) => (i === last ? { ...m, content: m.content + REMINDER + styleHint(m.content) } : m));
         if (nudge) { request.push(...nudge); nudge = null; }
         const message = await chat(this.config, [{ role: 'system', content: systemPrompt(this.config) }, ...request], tools, signal,
           (piece) => { streamed = true; emit({ type: 'reply-delta', text: piece }); });
