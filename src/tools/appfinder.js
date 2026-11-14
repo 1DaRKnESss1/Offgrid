@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ROOT } from '../paths.js';
 import { POWERSHELL, SYSTEM32 } from './util.js';
+import { isStoreAppId } from '../security/config.js';
 
 const SHORTCUTS_SCRIPT = path.join(ROOT, 'shell', 'shortcuts.ps1');
 const REG = path.join(SYSTEM32, 'reg.exe');
@@ -98,10 +99,10 @@ export function gameExe(game) {
 }
 
 /**
- * Шукає програму за назвою. Повертає [{ name, exe, source, score }], найкращі збіги першими (щонайбільше 8).
+ * Шукає програму за назвою. Повертає [{ name, exe | appId, source, score }], найкращі збіги першими (щонайбільше 8).
  * run(exe, args) — як у ctx.os; env і dirs підміняються в тестах.
  */
-export async function findApps(query, { run, env = process.env, dirs = shortcutDirs(env) } = {}) {
+export async function findApps(query, { run, env = process.env, dirs = shortcutDirs(env), storeApps = true } = {}) {
   const hits = [];
   const urls = [];
   for (const dir of dirs) {
@@ -144,9 +145,20 @@ export async function findApps(query, { run, env = process.env, dirs = shortcutD
     if (exe) results.push({ name: clean(game.name), exe: path.resolve(exe), source: 'Steam', score });
   }
 
+  // програми з Microsoft Store: ні ярлика, ні файлу — лише запис у списку програм Windows
+  if (storeApps) {
+    const r = await run(POWERSHELL, ['-NoProfile', '-NoLogo', '-Command',
+      '[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; Get-StartApps | ForEach-Object { $_.Name + [char]9 + $_.AppID }']);
+    for (const line of r.ok ? r.stdout.split(/\r?\n/) : []) {
+      const [name, appId] = line.split('\t');
+      const score = matchScore(name, query);
+      if (score && isStoreAppId((appId ?? '').trim()) && !NOT_AN_APP.test(name)) results.push({ name: clean(name), appId: appId.trim(), source: 'Microsoft Store', score });
+    }
+  }
+
   const seen = new Set();
   return results
     .sort((a, b) => b.score - a.score)
-    .filter((r) => { const k = r.exe.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; })
+    .filter((r) => { const k = (r.exe ?? r.appId).toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; })
     .slice(0, 8);
 }

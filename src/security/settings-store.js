@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_CONFIG, SETTINGS_FILE } from '../paths.js';
-import { validateConfig, resolveExe, expandFolder, isValidHotkey, FILE_TYPE_GROUPS, OPENABLE, READABLE } from './config.js';
+import { validateConfig, resolveExe, expandFolder, isValidHotkey, isStoreAppId, FILE_TYPE_GROUPS, OPENABLE, READABLE } from './config.js';
 
 const KEY_RE = /^[a-z][a-z0-9_]{0,30}$/;
 const MAX_ITEMS = 60;
@@ -64,7 +64,16 @@ const accepted = (kind, key) => (config, warnings) => (Object.hasOwn(config[kind
 
 /** Правки. Кожна змінює raw і може повернути функцію перевірки результату. Помилки — через throw. */
 export const changes = {
-  addApp(raw, { exe, name }) {
+  addApp(raw, { exe, name, appId }) {
+    if (appId !== undefined) { // програма з Microsoft Store (додається лише через пропозицію асистента)
+      if (!isStoreAppId(appId)) throw new Error('Неправильний ідентифікатор програми');
+      const list = section(raw, 'apps', 'map');
+      if (Object.keys(list).length >= MAX_ITEMS) throw new Error('Забагато програм у списку');
+      if (Object.values(list).some((a) => a?.appId === appId)) throw new Error('Ця програма вже є у списку');
+      const k = makeKey(name ?? 'app', list, 'app');
+      list[k] = { name: cleanName(name, k), appId };
+      return accepted('apps', k);
+    }
     if (typeof exe !== 'string' || !/\.exe$/i.test(exe)) throw new Error('Потрібен файл програми з розширенням .exe');
     const apps = section(raw, 'apps', 'map');
     if (Object.keys(apps).length >= MAX_ITEMS) throw new Error('Забагато програм у списку');
@@ -80,7 +89,7 @@ export const changes = {
     const app = apps[key];
     if (name !== undefined) app.name = cleanName(name, key);
     if (closable === true) {
-      if (typeof app.exe !== 'string') throw new Error('У цієї програми не вказано файл');
+      if (typeof app.exe !== 'string') throw new Error(app.appId ? 'Програми з Microsoft Store асистент закривати не вміє.' : 'У цієї програми не вказано файл');
       if (!app.process) app.process = path.basename(app.exe);
       // назву процесу з пробілом чи іншими незвичними знаками перевірка відкине — тоді нічого не записуємо
       return (config) => (config.apps[key]?.process ? null : 'Цю програму асистент закривати не зможе: назва її файлу містить незвичні символи.');
@@ -179,7 +188,8 @@ export function settingsView(config, warnings = []) {
     return {
       key,
       name: text(valid ? config.apps[key].name : a?.name, 40) || key,
-      exe: text(valid ? config.apps[key].exe : a?.exe),
+      exe: text(valid ? (config.apps[key].exe ?? `Microsoft Store · ${config.apps[key].appId}`) : (a?.exe ?? a?.appId)),
+      store: valid && !!config.apps[key].appId,
       closable: valid ? !!config.apps[key].process : false,
       valid,
     };

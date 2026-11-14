@@ -31,6 +31,11 @@ export default [
     async run({ app }, { config, os }) {
       const cfg = Object.hasOwn(config.apps, app) ? config.apps[app] : null;
       if (!cfg) return { ok: false, error: `Програми «${app}» немає в списку дозволених` };
+      if (cfg.appId) { // програма з Microsoft Store: Windows сама покаже її вікно, якщо вона вже відкрита
+        return (await os.openShellFolder(`shell:AppsFolder\\${cfg.appId}`))
+          ? { ok: true, message: `${cfg.name} відкрито` }
+          : { ok: false, error: `Не вдалося запустити ${cfg.name}` };
+      }
       // Чи програма вже працює? Запускаємо в будь-якому разі: ті, що не допускають другої копії (Discord, Steam,
       // більшість ігор), від цього просто показують своє вікно, решта відкриває ще одне. Відповідь каже, що сталося.
       const image = path.basename(cfg.exe);

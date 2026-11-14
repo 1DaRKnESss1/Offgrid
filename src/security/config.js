@@ -72,6 +72,9 @@ const exists = (p) => { try { fs.lstatSync(p); return true; } catch { return fal
 
 // Назва .exe -> повний шлях. Поточну папку не переглядаємо ніколи: інакше підкинутий туди calc.exe
 // запустився б замість справжнього.
+/** Ідентифікатор програми з Microsoft Store: «Видавець.Назва_код!Точка». */
+export const isStoreAppId = (id) => typeof id === 'string' && /^[A-Za-z0-9][\w.-]{2,120}_[a-z0-9]{8,20}![\w.-]{1,60}$/.test(id);
+
 export function resolveExe(exe) {
   if (typeof exe !== 'string' || !/\.exe$/i.test(exe) || /["<>|*?\r\n]/.test(exe)) return null;
   if (DRIVE_PATH.test(exe)) return exists(exe) ? path.resolve(exe) : null;
@@ -240,6 +243,13 @@ export function validateConfig(raw, defaults, toolModes = null) {
   cfg.apps = {};
   for (const [key, a] of Object.entries(section('apps', isObject, {}))) {
     if (!KEY_RE.test(key)) { warn(`Програма «${key}»: ключ має бути латиницею (a-z, 0-9, _)`); continue; }
+    // Програма з Microsoft Store не має файлу, який можна вказати: її запускає Windows за ідентифікатором.
+    // Ідентифікатор — лише літери, цифри, крапки, дефіси й один «!»: жодних шляхів, пробілів чи аргументів.
+    if (a?.appId !== undefined) {
+      if (!isStoreAppId(a.appId) || a.exe !== undefined) { warn(`Програма «${key}»: appId записано неправильно (і разом з exe його вказувати не можна)`); continue; }
+      cfg.apps[key] = { name: typeof a.name === 'string' && a.name.trim() ? a.name.trim().slice(0, 40) : key, appId: a.appId };
+      continue;
+    }
     const exe = resolveExe(a?.exe);
     if (!exe) { warn(`Програма «${key}»: «${a?.exe}» не знайдено. Потрібна назва .exe із системних папок або повний шлях, без аргументів`); continue; }
     const app = { name: typeof a.name === 'string' && a.name.trim() ? a.name.trim().slice(0, 40) : key, exe };

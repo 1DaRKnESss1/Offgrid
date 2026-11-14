@@ -91,7 +91,7 @@
         h('button', { type: 'button', class: 'icon', title: 'Прибрати зі списку', 'aria-label': `Прибрати ${a.name}`, disabled: !view.editable,
           onclick: () => request('removeApp', { key: a.key }) }, h('span', { class: 'ic ic-x' }))),
       h('div', { class: 'item-path', text: a.exe || 'файл не вказано', title: a.exe }),
-      a.valid
+      a.store ? null : a.valid
         ? h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: a.closable, disabled: !view.editable,
             onchange: (e) => request('updateApp', { key: a.key, closable: e.target.checked }) }),

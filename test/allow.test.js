@@ -21,6 +21,7 @@ const load = () => loadConfig({ toolModes: TOOL_MODES }).config;
 
 // «система»: ярлики лежать у тестовій папці, а куди вони ведуть — відповідає заглушка замість PowerShell
 let targets = {};
+let store = ''; // що «відповідає» Windows на запит списку програм (назва, табуляція, ідентифікатор)
 function session({ allow = true, taint = 0 } = {}) {
   const asked = [];
   const s = {
@@ -32,7 +33,7 @@ function session({ allow = true, taint = 0 } = {}) {
     os: {
       appDirs: [menu],
       run: async (exe, args) => (/powershell/i.test(exe)
-        ? { ok: true, stdout: args.slice(args.indexOf('-File') + 2).map((p) => targets[path.basename(p)] ?? '').join('\r\n') }
+        ? { ok: true, stdout: args.includes('-Command') ? store : args.slice(args.indexOf('-File') + 2).map((p) => targets[path.basename(p)] ?? '').join('\r\n') }
         : { ok: false, stdout: '' }),
       allow: (change, payload) => { const r = editSettings(change, payload, TOOL_MODES); if (r.ok) s.config = load(); return r; },
     },
@@ -47,6 +48,7 @@ beforeEach(() => {
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ apps: {}, folders: {}, fileTypes: ['.txt'], readableTypes: [] }));
   for (const f of fs.readdirSync(menu)) fs.rmSync(path.join(menu, f), { recursive: true, force: true });
   targets = {};
+  store = '';
 });
 const shortcut = (name, target) => { fs.writeFileSync(path.join(menu, `${name}.lnk`), ''); targets[`${name}.lnk`] = target; };
 
@@ -186,4 +188,25 @@ test('погляд на екран: побачене — недовірені д
   const blind = session();
   assert.equal((await executeTool('look_at_screen', { question: 'що тут?' }, blind)).result.ok, false);
   assert.equal(blind.taint, 0);
+});
+
+test('програма з Microsoft Store: додається за ідентифікатором і запускається через Windows', async () => {
+  const id = '38833FF26BA1D.UnigramPreview_g9c9v27vpyspw!App';
+  store = `Unigram\t${id}\r\nBlocknote\tC:\\Tools\\note.exe\r\nEvil\tfoo_bar12345!App & calc.exe\r\n`;
+  const s = session();
+  const { result } = await executeTool('allow_app', { name: 'Unigram' }, s);
+  assert.equal(result.ok, true, result.error);
+  assert.match(s.asked[0].summary, /Microsoft Store/);
+  const app = Object.values(load().apps)[0];
+  assert.deepEqual(app, { name: 'Unigram', appId: id });
+  // запуск — лише «shell:AppsFolder\<ідентифікатор>», без жодних аргументів
+  const { default: apps } = await import('../src/tools/apps.js');
+  const opened = [];
+  const r = await apps.find((x) => x.name === 'open_app').run({ app: Object.keys(load().apps)[0] }, { config: load(), os: { openShellFolder: async (x) => { opened.push(x); return true; } } });
+  assert.equal(r.ok, true);
+  assert.deepEqual(opened, [`shell:AppsFolder\\${id}`]);
+  // запис, що не схожий на ідентифікатор Store, не пропонується й уручну не приймається
+  assert.equal((await executeTool('allow_app', { name: 'Evil' }, session())).result.ok, false);
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ apps: { x: { name: 'X', appId: 'a_b12345678!App & calc.exe' }, y: { name: 'Y', appId: id, exe: 'notepad.exe' } }, folders: {}, fileTypes: [], readableTypes: [] }));
+  assert.deepEqual(load().apps, {});
 });

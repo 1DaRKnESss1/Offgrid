@@ -38,23 +38,23 @@ export default [
       if (query.length < 2) return { ok: false, error: 'Потрібна назва програми' };
       const found = await findApps(query, { run: ctx.os.run, ...(ctx.os.appDirs ? { dirs: ctx.os.appDirs } : {}) });
       if (found.length === 0) {
-        return { ok: false, error: `Програму «${query}» не знайшов ні в меню «Пуск», ні серед ігор Steam. Скажи користувачеві, що він може додати її сам: налаштування → «Програми» → «Додати програму…».` };
+        return { ok: false, error: `Програму «${query}» не знайшов ні в меню «Пуск», ні серед програм Microsoft Store, ні серед ігор Steam. Скажи користувачеві, що він може додати її сам: налаштування → «Програми» → «Додати програму…».` };
       }
       const best = found.filter((f) => f.score === found[0].score);
       if (best.length > 1) {
         return { ok: false, error: `Знайшов кілька схожих: ${best.map((f) => `«${f.name}»`).join(', ')}. Спитай користувача, яку саме, і виклич інструмент ще раз із точною назвою.` };
       }
       const app = best[0];
-      const has = Object.entries(ctx.config.apps).find(([, a]) => samePath(resolveExe(a.exe) ?? a.exe, app.exe));
+      const has = Object.entries(ctx.config.apps).find(([, a]) => (app.appId ? a.appId === app.appId : !!a.exe && samePath(resolveExe(a.exe) ?? a.exe, app.exe)));
       if (has) return { ok: false, error: `Програма «${has[1].name}» уже є в списку дозволених.` };
       ctx.proposal = app;
       return null;
     },
-    describe: (args, ctx) => `Додати до дозволених програм «${ctx.proposal.name}» — ${ctx.proposal.exe} (знайдено: ${ctx.proposal.source}). `
+    describe: (args, ctx) => `Додати до дозволених програм «${ctx.proposal.name}» — ${ctx.proposal.exe ?? `програма з Microsoft Store (${ctx.proposal.appId})`} (знайдено: ${ctx.proposal.source}). `
       + `Після цього я зможу відкривати її без запитань.${warn(ctx)}`,
     async run(args, ctx) {
-      const { name, exe } = ctx.proposal;
-      return apply(ctx, 'addApp', { exe, name }, `«${name}» додано до дозволених програм. Відкрити її можна наступною командою.`);
+      const { name, exe, appId } = ctx.proposal;
+      return apply(ctx, 'addApp', appId ? { appId, name } : { exe, name }, `«${name}» додано до дозволених програм. Відкрити її можна наступною командою.`);
     },
   },
   {
