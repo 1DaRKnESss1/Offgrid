@@ -23,6 +23,7 @@ export const TOOL_LABELS = {
   list_notes: 'Переглянув нотатки',
   read_note: 'Прочитав нотатку',
   look_at_screen: 'Подивився на екран',
+  ask_selection: 'Прочитав виділене',
 };
 
 export const ALL_TOOLS = [...system, ...apps, ...files, ...notes, ...web, ...allow, ...screen, ...pc, ...selection, ...memory];

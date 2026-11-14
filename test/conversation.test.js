@@ -352,3 +352,11 @@ test('гучність теж виконує код; луна з коротки�
   assert.equal(isEcho('Добре, зроби гучніше.', 'зроби гучніше'), true);
   assert.equal(isEcho('Зробив гучніше на двадцять відсотків, як ти просив.', 'зроби гучніше'), false);
 });
+
+test('виділений текст: запитання про нього і прохання його змінити — різні інструменти', async () => {
+  const { requiredTool } = await import('../src/agent/tone.js');
+  const tool = (q) => requiredTool(q, ['edit_selection', 'ask_selection'])?.tool ?? null;
+  for (const q of ['що написано у виділеному тексті?', 'про що виділений текст', 'поясни виділене', 'перекажи виділений текст коротко']) assert.equal(tool(q), 'ask_selection', q);
+  for (const q of ['переклади виділений текст англійською', 'виправ помилки у виділеному', 'скороти виділене', 'зроби виділений текст ввічливішим', 'поясни простіше і заміни виділене']) assert.equal(tool(q), 'edit_selection', q);
+  assert.equal(requiredTool('про що виділений текст', ['edit_selection']).tool, 'edit_selection', 'без інструмента запитань лишається обробка');
+});

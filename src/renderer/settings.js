@@ -15,7 +15,7 @@
     write_note: 'Записати нотатку', list_notes: 'Список нотаток', read_note: 'Прочитати нотатку', delete_note: 'Видалити нотатку',
     search_web: 'Пошук в інтернеті', open_website: 'Відкрити сайт', allow_app: 'Дозволити програму', allow_folder: 'Дозволити папку',
     allow_file_type: 'Дозволити тип файлів', look_at_screen: 'Погляд на екран', control_pc: 'Керування комп\'ютером', timers: 'Таймери', dictation: 'Диктування',
-    edit_selection: 'Виділений текст', memory: 'Пам\'ять', save_scenario: 'Зберегти сценарій', scenario: 'Сценарій',
+    edit_selection: 'Виділений текст', ask_selection: 'Запитання про виділене', memory: 'Пам\'ять', save_scenario: 'Зберегти сценарій', scenario: 'Сценарій',
   };
   const DECISIONS = {
     auto: ['виконано', 'ok'], confirmed: ['з твого дозволу', 'ok'], user: ['змінено тобою', 'ok'],

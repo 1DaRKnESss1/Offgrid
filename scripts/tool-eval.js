@@ -37,12 +37,13 @@ const CASES = [
   ['нагадай через десять хвилин зняти чайник', 'timers'],
   ['переклади виділений текст англійською', 'edit_selection'],
   ['виправ помилки у виділеному', 'edit_selection'],
+  ['що написано у виділеному тексті?', 'ask_selection'],
   ['привіт, як справи?', null],
   ['дякую', null],
 ];
 
 const repeats = Math.max(1, Number(process.argv[2]) || 3);
-const os = { pc: async () => ({ ok: true, message: 'ок' }), editSelection: async () => ({ ok: true, message: 'Готово' }), timers: { add: () => ({ ok: true, item: { label: '', due: Date.now() + 60000 } }), list: () => [], cancel: () => [] }, launch: async () => true, run: async () => ({ ok: true, stdout: '' }), openPath: async () => true, openUrl: async () => true, openShellFolder: async () => true };
+const os = { pc: async () => ({ ok: true, message: 'ок' }), editSelection: async (q, r, mode) => (mode === 'ask' ? { ok: true, message: 'Прочитав', about_selection: 'У тексті йдеться про погоду.' } : { ok: true, message: 'Готово' }), timers: { add: () => ({ ok: true, item: { label: '', due: Date.now() + 60000 } }), list: () => [], cancel: () => [] }, launch: async () => true, run: async () => ({ ok: true, stdout: '' }), openPath: async () => true, openUrl: async () => true, openShellFolder: async () => true };
 let pass = 0, total = 0;
 const fails = [];
 try {

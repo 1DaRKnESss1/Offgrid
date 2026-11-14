@@ -148,6 +148,9 @@ export const asksAboutSelection = (text) => ABOUT_SELECTION.test(String(text ?? 
 // ---------- Прохання, для яких інструмент потрібен напевно ----------
 const ASKS_TIME = /котра\s+(?:зараз\s+)?година|котрий\s+(?:зараз\s+)?час|скільки\s+(?:зараз\s+)?(?:часу|годин)|як(?:е|ий)\s+(?:сьогодні|зараз)\s+(?:число|день)|яка\s+(?:сьогодні\s+|зараз\s+)?дата/iu;
 const SCREEN_NUDGE = 'Ти не бачиш екран, доки не викличеш інструмент look_at_screen. Виклич його зараз і розкажи, що він показав.';
+const SELECTION_QUESTION = /що\s+(?:тут\s+|там\s+|це\s+)?(?:написано|означає|сказано|за\s+текст)|про\s+що|поясни|розкажи|перекажи|прочитай|підсумуй|в\s+чому\s+суть|\?/iu;
+const SELECTION_CHANGE = /переклад|виправ|скороти|перепиш|зроби|зміни|заміни|відредагу|покращ|спрост/iu;
+const SELECTION_ASK_NUDGE = 'Виділений текст читає інструмент ask_selection. Виклич ask_selection просто зараз із запитанням користувача й відповідай за тим, що він поверне.';
 const SELECTION_NUDGE = 'Виділений текст бере інструмент edit_selection — тобі його бачити не треба. Виклич edit_selection просто зараз, передавши в task, що зробити з текстом.';
 
 // «запам'ятай, що…» і «що ти пам'ятаєш про…» — теж однозначні: модель інколи відповідає «запам'ятав», нічого не зберігши
@@ -175,7 +178,12 @@ const RECALL = /що\s+ти\s+(?:про\s+мене\s+)?пам['’ʼ]?ятаєш
 export function requiredTool(input, toolNames = [], { findScenario = null } = {}) {
   const has = (name) => toolNames.includes(name);
   const text = String(input ?? '').trim().slice(0, 300);
-  if (has('edit_selection') && asksAboutSelection(text)) return { tool: 'edit_selection', args: { task: text }, nudge: SELECTION_NUDGE };
+  if (asksAboutSelection(text)) {
+    // запитання про виділене -> відповісти; прохання змінити -> обробити. У сумнівному випадку — змінити не просили.
+    const question = SELECTION_QUESTION.test(text) && !SELECTION_CHANGE.test(text);
+    if (question && has('ask_selection')) return { tool: 'ask_selection', args: { question: text }, nudge: SELECTION_ASK_NUDGE };
+    if (has('edit_selection')) return { tool: 'edit_selection', args: { task: text }, nudge: SELECTION_NUDGE };
+  }
   if (has('look_at_screen') && asksAboutScreen(text)) return { tool: 'look_at_screen', args: { question: text }, nudge: SCREEN_NUDGE };
   if (has('get_time') && ASKS_TIME.test(text) && text.length <= 60) return { tool: 'get_time', args: {} };
   // «запусти режим гри»: якщо такий сценарій справді збережено — запускаємо його, а не чекаємо, що модель здогадається

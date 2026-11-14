@@ -11,6 +11,28 @@ export const MAX_SELECTION = 5000;
 
 export default [
   {
+    // Запитання про виділений текст: «що тут написано», «про що це», «поясни». На відміну від edit_selection,
+    // відповідь повертається в розмову (щоб асистент сказав її вголос), тому це сторонні дані з найвищим рівнем
+    // недовіри — як вміст файлу чи екран: після цього запис нотаток, пошук і сайти потребують дозволу.
+    name: 'ask_selection',
+    confirm: 'tainted',
+    untrusted: 'content',
+    schema: () => ({
+      description: 'Відповідає на запитання про текст, який користувач виділив у будь-якій програмі: що там написано, про що він, '
+        + 'що означає, переказати, пояснити. Нічого не змінює й не копіює.',
+      parameters: {
+        type: 'object',
+        properties: { question: { type: 'string', description: 'Що користувач хоче знати про виділений текст, його словами' } },
+        required: ['question'],
+      },
+    }),
+    describe: () => 'Прочитати виділений текст і відповісти на запитання про нього',
+    async run({ question }, { os }) {
+      if (typeof os.editSelection !== 'function') return { ok: false, error: 'Працювати з виділеним текстом зараз не можу' };
+      return os.editSelection(str(question, 300) || 'Про що цей текст?', false, 'ask');
+    },
+  },
+  {
     name: 'edit_selection',
     confirm: 'tainted',
     schema: () => ({
