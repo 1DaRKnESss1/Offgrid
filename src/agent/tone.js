@@ -158,6 +158,8 @@ const MEDIA_PAUSE = new RegExp(`на\\s+пауз[уі]|^пауза[.!\\s]*$|(?:�
 const MEDIA_PLAY = new RegExp(`зніми\\s+(?:\\p{L}+\\s+){0,2}з\\s+паузи|(?:продовж\\p{L}*|віднови|відновлюй|запусти|увімкни|ввімкни|включи|грай)\\s+(?:\\p{L}+\\s+){0,2}${PLAYS}|^(?:грай|грай\\s+далі|продовжуй|продовж|плей)[.!\\s]*$|щоб\\s+(?:\\p{L}+\\s+){0,2}грал[аои]`, 'iu');
 const MEDIA_NEXT = new RegExp(`наступн\\p{L}*\\s+${PLAYS}|${PLAYS}\\s+далі|(?:перемкни|переключи|скіпни|пропусти)\\s+(?:\\p{L}+\\s+){0,2}${PLAYS}|^(?:наступн\\p{L}*|далі)[.!\\s]*$`, 'iu');
 const MEDIA_PREV = new RegExp(`попередн\\p{L}*\\s+${PLAYS}|(?:поверни|верни)\\s+(?:\\p{L}+\\s+){0,2}попередн|^(?:попередн\\p{L}*|назад)[.!\\s]*$`, 'iu');
+// програма, чию гучність просять змінити (решту слів tools/system.js перетворює на назву процесу)
+const VOLUME_APP = /spotify|спот[іи]фа\p{L}*|discord|д[іи]скорд\p{L}*|youtube|ютуб\p{L}*|браузер\p{L}*|chrome|хром\p{L}*|opera|опер\p{L}*|firefox|фа[єй]рфокс\p{L}*|steam|ст[іи]м\p{L}*|telegram|unigram|телеграм\p{L}*|юн[іи]грам\p{L}*|vlc/iu;
 const VOLUME_UP = /гучніше|голосніше|додай\s+(?:гучност|звук)|збільш\p{L}*\s+(?:гучніст|звук)/iu;
 const VOLUME_DOWN = /тихіше|зменш\p{L}*\s+(?:гучніст|звук)|прибери\s+(?:гучніст|звук)/iu;
 const VOLUME_MUTE = /^(?:вимкни|виключи|увімкни|ввімкни|поверни)\s+звук[.!\s]*$|без\s+звуку/iu;
@@ -181,7 +183,8 @@ export function requiredTool(input, toolNames = [], { findScenario = null } = {}
   if (launch) { const found = findScenario(launch[1]); if (found) return { tool: 'scenario', args: { action: 'run', name: found.name }, direct: true }; }
   if (has('change_volume') && text.length <= 60) {
     const vol = VOLUME_UP.test(text) ? 'up' : VOLUME_DOWN.test(text) ? 'down' : VOLUME_MUTE.test(text) ? 'mute' : null;
-    if (vol) return { tool: 'change_volume', args: { action: vol, amount: /трохи|трішки|ледь|трошки/iu.test(text) ? 'small' : /набагато|значно|сильно|дуже/iu.test(text) ? 'large' : 'medium' }, direct: true };
+    const app = VOLUME_APP.exec(text)?.[0];
+    if (vol) return { tool: 'change_volume', args: { action: vol, ...(app ? { app } : {}), amount: /трохи|трішки|ледь|трошки/iu.test(text) ? 'small' : /набагато|значно|сильно|дуже/iu.test(text) ? 'large' : 'medium' }, direct: true };
   }
   if (has('control_pc') && text.length <= 90) {
     const media = MEDIA_PAUSE.test(text) ? 'pause' : MEDIA_PLAY.test(text) ? 'play' : MEDIA_NEXT.test(text) ? 'next_track' : MEDIA_PREV.test(text) ? 'previous_track' : null;

@@ -205,6 +205,20 @@ export class Host extends EventEmitter {
    */
   async media(action) { return this.#ask({ c: 'media', action }, 12_000); }
 
+  /**
+   * Гучність окремої програми в мікшері Windows. names — частини назв процесів; delta — на скільки відсотків
+   * змінити (±); mute — перемкнути «без звуку». Без names лише повертає, які програми зараз мають звук.
+   * Повертає { changed: [{ name, level, muted }], all: [назви] }.
+   */
+  async appVolume(names, delta = 0, mute = false) {
+    const r = await this.#ask({ c: 'appvol', names: names ?? null, delta, mute });
+    const part = (key) => (new RegExp(`${key}=([^;]*)`).exec(String(r.result ?? ''))?.[1] ?? '').split(',').filter(Boolean);
+    return {
+      changed: part('changed').map((e) => { const [name, lv] = e.split(':'); return { name, level: parseInt(lv, 10), muted: /m$/.test(lv ?? '') }; }),
+      all: part('all'),
+    };
+  }
+
   /** Сигнал таймера (стандартний звук Windows). */
   async sound() { return (await this.#ask({ c: 'sound' })).ok === true; }
 

@@ -364,3 +364,26 @@ test('сценарії: лише дозволені дії, збереження
   assert.equal(store.listScenarios().length, 0);
   store.close();
 });
+
+test('гучність окремої програми: назва зі слів -> процес; якщо програма мовчить — чесна відмова', async () => {
+  const { appProcessNames, default: system } = await import('../src/tools/system.js');
+  assert.deepEqual(appProcessNames('спотіфаї'), ['Spotify']);
+  assert.deepEqual(appProcessNames('Discord'), ['Discord']);
+  assert.ok(appProcessNames('ютуб').includes('opera'));
+  assert.deepEqual(appProcessNames('foobar2000'), ['foobar2000']);
+  assert.equal(appProcessNames(''), null);
+  assert.equal(appProcessNames(undefined), null);
+  const tool = system.find((x) => x.name === 'change_volume');
+  const calls = [];
+  const os = { appVolume: async (names, delta, mute) => { calls.push([names, delta, mute]); return names[0] === 'Spotify' ? { changed: [{ name: 'Spotify', level: 60, muted: false }], all: ['Spotify', 'opera'] } : { changed: [], all: ['Spotify', 'opera'] }; }, volume: async () => { calls.push('system'); return true; } };
+  const quiet = await tool.run({ action: 'down', app: 'спотіфай' }, { os });
+  assert.equal(quiet.ok, true);
+  assert.match(quiet.message, /Spotify тепер 60%/);
+  assert.deepEqual(calls[0], [['Spotify'], -20, false]);
+  const none = await tool.run({ action: 'up', app: 'Discord' }, { os });
+  assert.equal(none.ok, false);
+  assert.match(none.error, /Spotify, opera/);
+  // без назви програми — як і раніше, гучність усього комп'ютера
+  await tool.run({ action: 'up' }, { os });
+  assert.equal(calls.at(-1), 'system');
+});

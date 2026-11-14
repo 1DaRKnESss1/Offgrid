@@ -342,6 +342,9 @@ test('гучність теж виконує код; луна з коротки�
   const { requiredTool, isEcho } = await import('../src/agent/tone.js');
   const vol = (q) => requiredTool(q, ['change_volume', 'control_pc'])?.args ?? null;
   assert.deepEqual(vol('зроби гучніше'), { action: 'up', amount: 'medium' });
+  assert.deepEqual(vol('зроби Spotify тихіше'), { action: 'down', app: 'Spotify', amount: 'medium' });
+  assert.equal(vol('трохи гучніше в спотіфаї').app, 'спотіфаї');
+  assert.equal(vol('зроби ютуб тихіше').app, 'ютуб');
   assert.deepEqual(vol('трохи тихіше'), { action: 'down', amount: 'small' });
   assert.deepEqual(vol('зроби набагато гучніше'), { action: 'up', amount: 'large' });
   assert.equal(vol('вимкни звук').action, 'mute');

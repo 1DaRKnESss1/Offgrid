@@ -1065,6 +1065,7 @@ async function start() {
     allow: (change, payload) => (ALLOW_CHANGES.has(change) ? changeSettings(change, payload) : { ok: false, error: 'Невідома зміна' }),
     see: lookAtScreen,
     pc: controlPc,
+    appVolume: (names, delta, mute) => ui.appVolume(names, delta, mute),
     volume: (action, presses) => ui.key({ up: 0xAF, down: 0xAE, mute: 0xAD }[action] ?? 0, presses),
     editSelection,
     get timers() { return timers; },

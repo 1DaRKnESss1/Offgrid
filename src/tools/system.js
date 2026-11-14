@@ -37,6 +37,28 @@ export function timeInWords(hours, minutes) {
 const VOLUME_KEYS = { up: 175, down: 174, mute: 173 };
 const VOLUME_STEPS = { small: 5, medium: 10, large: 20 };
 
+// Як назву програми називають уголос -> частини назв процесів у мікшері Windows
+const APP_ALIASES = [
+  [/spotify|спот[іи]фа/iu, ['Spotify']],
+  [/discord|д[іи]скорд/iu, ['Discord']],
+  [/youtube|ютуб|браузер|browser/iu, ['opera', 'chrome', 'msedge', 'firefox', 'brave', 'vivaldi']],
+  [/chrome|хром/iu, ['chrome']],
+  [/opera|опер/iu, ['opera']],
+  [/firefox|фа[єй]рфокс/iu, ['firefox']],
+  [/edge|едж/iu, ['msedge']],
+  [/steam|ст[іи]м/iu, ['steam']],
+  [/telegram|unigram|телеграм|юн[іи]грам/iu, ['Telegram', 'Unigram']],
+  [/vlc|влц/iu, ['vlc']],
+];
+/** Назва програми зі слів користувача -> частини назв процесів, або null, якщо програму не названо. */
+export function appProcessNames(app) {
+  const text = typeof app === 'string' ? app.trim() : '';
+  if (text.length < 2) return null;
+  for (const [pattern, names] of APP_ALIASES) if (pattern.test(text)) return names;
+  const plain = text.replace(/[^\w .-]/g, '').trim(); // решта — як є, якщо це латиниця (назва процесу)
+  return plain.length >= 2 ? [plain.slice(0, 40)] : null;
+}
+
 export default [
   {
     name: 'get_time',
@@ -93,14 +115,26 @@ export default [
         type: 'object',
         properties: {
           action: { type: 'string', enum: Object.keys(VOLUME_KEYS), description: 'up — гучніше, down — тихіше, mute — вимкнути або знову увімкнути звук' },
+          app: { type: 'string', description: 'Лише якщо просять змінити гучність однієї програми, а не всього комп\'ютера: її назва, наприклад Spotify, Discord, Chrome' },
           amount: { type: 'string', enum: Object.keys(VOLUME_STEPS), description: 'Наскільки змінити: small ≈ 10%, medium ≈ 20% (за замовчуванням), large ≈ 40%' },
         },
         required: ['action'],
       },
     }),
     describe: ({ action }) => `Змінити гучність (${action})`,
-    async run({ action, amount = 'medium' }, { os: sys }) {
+    async run({ action, amount = 'medium', app }, { os: sys }) {
       if (!Object.hasOwn(VOLUME_KEYS, action)) return { ok: false, error: `Невідома дія «${action}»` };
+      // гучність однієї програми — через мікшер Windows; решта звуку не змінюється
+      const names = appProcessNames(app);
+      if (names && typeof sys.appVolume === 'function') {
+        const step = (Object.hasOwn(VOLUME_STEPS, amount) ? VOLUME_STEPS[amount] : VOLUME_STEPS.medium) * 2;
+        const r = await sys.appVolume(names, action === 'up' ? step : action === 'down' ? -step : 0, action === 'mute');
+        if (r.changed.length === 0) {
+          return { ok: false, error: `Програма «${String(app).slice(0, 30)}» зараз не відтворює звук, тож її гучність змінити не можу. Звук зараз мають: ${r.all.join(', ') || 'жодна програма'}.` };
+        }
+        const c = r.changed[0];
+        return { ok: true, message: action === 'mute' ? `${c.name}: звук ${c.muted ? 'вимкнено' : 'увімкнено'}` : `Гучність ${c.name} тепер ${c.level}%` };
+      }
       // у скрипт потрапляють лише числа з таблиць вище, не текст від моделі
       const presses = action === 'mute' ? 1 : (Object.hasOwn(VOLUME_STEPS, amount) ? VOLUME_STEPS[amount] : VOLUME_STEPS.medium);
       // Гучність міняє оболонка командою до самої системи. Старий спосіб (нижче) «натискав клавішу» у вікні з

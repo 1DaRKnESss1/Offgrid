@@ -3,7 +3,7 @@
 # trusts: PowerShell + .NET WinForms + the WebView2 runtime that ships with Windows 11.
 #
 # It has no logic of its own. The Node process (src/app/main.js) starts it and drives it:
-#   Node -> shell : one JSON object per line on stdin   (navigate, show, place, tray, menu, hotkey, pick, open, shot, screen, key, media, sound, desktop, type, copy, clip, quit)
+#   Node -> shell : one JSON object per line on stdin   (navigate, show, place, tray, menu, hotkey, pick, open, shot, screen, key, media, appvol, sound, desktop, type, copy, clip, quit)
 # The panel address (with its one-time key) arrives through stdin, never on the command line, so that other
 # programs cannot read it from the process list.
 #   shell -> Node : one JSON object per line on stdout  (ready, hotkey, tray-click, menu, blur, focus, moved, ...)
@@ -130,6 +130,83 @@ public static class Native {
         RECT r; if (!GetWindowRect(h, out r)) return false;
         Rectangle b = Screen.FromHandle(h).Bounds;
         return r.L <= b.Left && r.T <= b.Top && r.R >= b.Right && r.B >= b.Bottom;
+    }
+}
+
+// The Windows volume mixer: every program that makes sound has its own volume. Only volume and mute are
+// touched; programs are matched by process name.
+public static class AppVolume {
+    [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class DeviceEnumerator { }
+    [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IMMDeviceEnumerator {
+        [PreserveSig] int EnumAudioEndpoints(int flow, int mask, out IntPtr devices);
+        [PreserveSig] int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice device);
+    }
+    [Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IMMDevice { [PreserveSig] int Activate(ref Guid iid, int ctx, IntPtr p, [MarshalAs(UnmanagedType.IUnknown)] out object o); }
+    [Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionManager2 {
+        [PreserveSig] int GetAudioSessionControl(IntPtr a, int b, out IntPtr c);
+        [PreserveSig] int GetSimpleAudioVolume(IntPtr a, int b, out IntPtr c);
+        [PreserveSig] int GetSessionEnumerator(out IAudioSessionEnumerator e);
+    }
+    [Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionEnumerator {
+        [PreserveSig] int GetCount(out int n);
+        [PreserveSig] int GetSession(int i, [MarshalAs(UnmanagedType.IUnknown)] out object session);
+    }
+    [Guid("BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionControl2 {
+        [PreserveSig] int f0(); [PreserveSig] int f1(); [PreserveSig] int f2(); [PreserveSig] int f3(); [PreserveSig] int f4();
+        [PreserveSig] int f5(); [PreserveSig] int f6(); [PreserveSig] int f7(); [PreserveSig] int f8(); [PreserveSig] int f9(); [PreserveSig] int f10();
+        [PreserveSig] int GetProcessId(out uint pid);
+    }
+    [Guid("87CE5498-68D6-44E5-9215-6DA47EF883D8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface ISimpleAudioVolume {
+        [PreserveSig] int SetMasterVolume(float level, ref Guid ctx);
+        [PreserveSig] int GetMasterVolume(out float level);
+        [PreserveSig] int SetMute(bool mute, ref Guid ctx);
+        [PreserveSig] int GetMute(out bool mute);
+    }
+
+    // names: fragments of process names to change (null = change nothing, just list). delta: -1..1 added to the
+    // volume. Returns "changed=Name:45,Name:45;all=Name,Name" (levels in percent; "m" after a level = muted).
+    public static string Apply(string[] names, float delta, bool toggleMute) {
+        System.Collections.Generic.List<string> changed = new System.Collections.Generic.List<string>();
+        System.Collections.Generic.List<string> all = new System.Collections.Generic.List<string>();
+        IMMDeviceEnumerator en = (IMMDeviceEnumerator)(new DeviceEnumerator());
+        IMMDevice device;
+        if (en.GetDefaultAudioEndpoint(0, 1, out device) != 0 || device == null) return "changed=;all=";
+        Guid iid = typeof(IAudioSessionManager2).GUID; object o;
+        if (device.Activate(ref iid, 23, IntPtr.Zero, out o) != 0) return "changed=;all=";
+        IAudioSessionEnumerator sessions;
+        if (((IAudioSessionManager2)o).GetSessionEnumerator(out sessions) != 0) return "changed=;all=";
+        int count; sessions.GetCount(out count);
+        Guid none = Guid.Empty;
+        for (int i = 0; i < count; i++) {
+            object s; if (sessions.GetSession(i, out s) != 0 || s == null) continue;
+            IAudioSessionControl2 ctl = s as IAudioSessionControl2; ISimpleAudioVolume vol = s as ISimpleAudioVolume;
+            if (ctl == null || vol == null) continue;
+            uint pid; if (ctl.GetProcessId(out pid) != 0 || pid == 0) continue;
+            string name;
+            try { name = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; } catch { continue; }
+            if (!all.Contains(name)) all.Add(name);
+            if (names == null) continue;
+            bool match = false;
+            foreach (string n in names) { if (n.Length >= 2 && name.IndexOf(n, StringComparison.OrdinalIgnoreCase) >= 0) { match = true; break; } }
+            if (!match) continue;
+            float level; vol.GetMasterVolume(out level);
+            bool muted; vol.GetMute(out muted);
+            if (toggleMute) { muted = !muted; vol.SetMute(muted, ref none); }
+            else {
+                level = Math.Max(0f, Math.Min(1f, level + delta));
+                vol.SetMasterVolume(level, ref none);
+                if (delta > 0 && muted) { muted = false; vol.SetMute(false, ref none); }
+            }
+            string entry = name + ":" + (int)Math.Round(level * 100) + (muted ? "m" : "");
+            if (!changed.Contains(entry)) changed.Add(entry);
+        }
+        return "changed=" + string.Join(",", changed.ToArray()) + ";all=" + string.Join(",", all.ToArray());
     }
 }
 
@@ -482,6 +559,14 @@ function Invoke-Command-Line([string]$line) {
       try { $r = Invoke-Media ([string]$cmd.action) } catch { $r = $null }
       if ($null -eq $r) { Emit @{ t = "reply"; id = $cmd.id; ok = $false; unsupported = $true } }
       else { Emit @{ t = "reply"; id = $cmd.id; ok = [bool]$r.ok; players = [int]$r.players; playing = @($r.playing); already = [bool]$r.already } }
+    }
+    "appvol" {
+      # volume of one program in the Windows mixer; names = process-name fragments, delta in percent, or mute toggle
+      $names = $null
+      if ($cmd.names) { $names = [string[]]@($cmd.names | ForEach-Object { [string]$_ } | Where-Object { $_ -match "^[\w .-]{2,40}$" }) }
+      $out = ""
+      try { $out = [AppVolume]::Apply($names, ([single]$cmd.delta) / 100, [bool]$cmd.mute) } catch { $out = "" }
+      Emit @{ t = "reply"; id = $cmd.id; ok = [bool]$out; result = $out }
     }
     "sound" {
       # the timer alarm: a standard Windows sound, nothing of our own
