@@ -19,9 +19,9 @@ export function setGpuLayers(layers) {
  * Відеопам'яті впритул, тож завантаження моделі зрідка падає всередині Ollama (помилка 500).
  * Друга спроба зазвичай проходить, тому один раз повторюємо самі — але лише якщо ще нічого не показали.
  */
-export async function chat(config, messages, tools, signal, onDelta = () => {}) {
+export async function chat(config, messages, tools, signal, onDelta = () => {}, options = {}) {
   try {
-    return await chatOnce(config, messages, tools, signal, onDelta);
+    return await chatOnce(config, messages, tools, signal, onDelta, options);
   } catch (e) {
     if (!e.retryable || signal?.aborted) throw e;
     // пауза перед повтором не має затримувати скасування
@@ -30,7 +30,7 @@ export async function chat(config, messages, tools, signal, onDelta = () => {}) 
       signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
     });
     if (signal?.aborted) throw new Error(CANCELLED);
-    return chatOnce(config, messages, tools, signal, onDelta);
+    return chatOnce(config, messages, tools, signal, onDelta, options);
   }
 }
 
@@ -42,7 +42,7 @@ function serverError(status, detail) {
     : `Ollama повернула помилку${status ? ` ${status}` : ''}${text ? `: ${text.slice(0, 160)}` : ''}`);
 }
 
-async function chatOnce(config, messages, tools, signal, onDelta) {
+async function chatOnce(config, messages, tools, signal, onDelta, extra = {}) {
   const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   let emitted = false;
   const fail = (e) => {
@@ -67,7 +67,7 @@ async function chatOnce(config, messages, tools, signal, onDelta) {
         // рекомендовані розробниками моделі параметри для режиму без роздумів
         // num_ctx задаємо явно: типове вікно Ollama інше, а зміна розміру перезавантажує модель
         options: { temperature: 0.7, top_p: 0.8, top_k: 20, presence_penalty: 1.5, num_ctx: NUM_CTX,
-          ...(gpuLayers !== null ? { num_gpu: gpuLayers } : {}) },
+          ...(gpuLayers !== null ? { num_gpu: gpuLayers } : {}), ...extra },
       }),
     });
   } catch (e) {
