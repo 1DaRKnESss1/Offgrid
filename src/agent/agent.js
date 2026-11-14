@@ -3,7 +3,7 @@ import { chat } from './ollama.js';
 import { systemPrompt } from './prompt.js';
 import { toolSchemas, TOOL_LABELS } from '../tools/index.js';
 import { executeTool, toolMessageContent } from '../security/policy.js';
-import { stripFiller, announcesIntent } from './tone.js';
+import { stripFiller, announcesIntent, asksAboutScreen } from './tone.js';
 
 const MAX_STEPS = 6;
 const MAX_CALLS_PER_STEP = 4;
@@ -16,6 +16,7 @@ const MAX_INPUT_CHARS = 2000;
 const IDLE_RESET_MS = 15 * 60 * 1000;
 const CANCELLED = 'Скасовано';
 // Якщо модель лише описала намір («зараз перевірю час»), а інструмент не викликала, — один раз на запит кажемо їй діяти
+const SCREEN_NUDGE = 'Ти не бачиш екран, доки не викличеш інструмент look_at_screen. Виклич його зараз і розкажи, що він показав.';
 const NUDGE = '(Асистенте, ти лише описав, що збираєшся зробити, але не зробив цього. Виклич потрібний інструмент просто зараз, без пояснень.)';
 const REMINDER = '\n\n(Нагадування асистенту: якщо це прохання щось зробити на комп’ютері або дізнатися час, стан системи чи файли — спершу виклич інструмент. Не кажи, що щось зроблено чи відомо, без результату інструмента в цьому ж ході. На привітання, подяку й просту балачку відповідай одразу, без інструментів.)';
 
@@ -125,6 +126,13 @@ export class Agent {
           // сказано «зроблю», а не зроблено: цю репліку відкидаємо й просимо модель діяти
           nudged = true;
           nudge = [{ role: 'assistant', content }, { role: 'user', content: NUDGE }];
+          if (streamed) emit({ type: 'reply-reset' });
+          continue;
+        }
+        if (calls.length === 0 && !nudged && toolsCalled === 0 && toolNames.includes('look_at_screen') && asksAboutScreen(input)) {
+          // питали про екран, а модель відповіла, не подивившись: це вигадка — відкидаємо й просимо подивитися
+          nudged = true;
+          nudge = [{ role: 'assistant', content }, { role: 'user', content: SCREEN_NUDGE }];
           if (streamed) emit({ type: 'reply-reset' });
           continue;
         }
