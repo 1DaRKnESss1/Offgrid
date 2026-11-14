@@ -25,6 +25,8 @@
     newChat: () => fire('new-chat'),
     hide: () => fire('hide'),
     show: () => fire('show'),
+    control: (action) => post('control', { action: String(action) }),
+    timer: (payload) => post('timer', payload),
     ready: () => post('ready'),
     settings: (action, payload) => post('settings', { action: String(action), payload }),
     log: () => post('log'),

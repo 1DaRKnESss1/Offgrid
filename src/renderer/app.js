@@ -192,6 +192,7 @@ window.offgrid.onEvent((event) => {
     case 'voice': applyVoice(event); break;
     case 'speak-setting': speakReplies = event.value; renderControls(); break;
     case 'notice': add('notice', event.text); break;
+    case 'timer-fired': add('notice', event.text); break;
     case 'reset': replyEl = null; hideConfirm(); showEmpty(); setBusy(false); ollamaNote = null; checkOllama(); break;
     case 'focus-input': if ((window.offgridView?.current ?? 'chat') === 'chat') input.focus(); break;
     case 'capture-end': window.offgridView?.captureEnded(); break;

@@ -12,7 +12,7 @@
   // режим -> [ширина, висота, радіус]; ті самі числа стоять у style.css
   const SIZES = {
     idle: [150, 36, 18], hint: [230, 36, 18], listening: [340, 44, 22], busy: [240, 36, 18],
-    reply: [390, 66, 26], note: [370, 40, 20], confirm: [390, 136, 28], confirmlong: [400, 236, 28], open: [400, 540, 26],
+    reply: [390, 66, 26], note: [370, 40, 20], confirm: [390, 136, 28], confirmlong: [400, 236, 28], open: [460, 640, 28],
   };
   const ALLOW_DELAY_MS = 800; // щоб клацання, націлене в інше вікно, не стало дозволом
   const TAIL_CHARS = 105;
@@ -23,6 +23,7 @@
   let reply = '';          // відповідь, яку модель пише / щойно сказала
   let tool = '';           // остання виконана дія
   let note = null;         // { text, tone } — коротке повідомлення на кілька секунд
+  let timers = [];         // [{ id, label, due }] — найближчий показуємо в спокої
   let noteTimer = null, lingerTimer = null, lingering = false, allowTimer = null;
 
   function mode() {
@@ -33,7 +34,7 @@
     if (state === 'thinking' || state === 'executing' || state === 'confirming') return reply && state === 'thinking' ? 'reply' : 'busy';
     if (note) return 'note';
     if (lingering && reply) return 'reply';
-    return wake?.armed || asleep ? 'hint' : 'idle';
+    return wake?.armed || asleep || timers.length ? 'hint' : 'idle';
   }
 
   // кінець довгого тексту, з початку слова: острівець показує те, що звучить зараз, а не початок відповіді
@@ -44,13 +45,22 @@
     return '…' + cut.slice(cut.indexOf(' ') + 1);
   }
 
+  function timerLabel() {
+    const t = timers[0];
+    const s = Math.max(0, Math.round((t.due - Date.now()) / 1000));
+    const hh = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60), ss = String(s % 60).padStart(2, '0');
+    const left = hh ? `${hh}:${String(mm).padStart(2, '0')}:${ss}` : `${mm}:${ss}`;
+    return `${t.label ? t.label.slice(0, 16) : 'Таймер'} · ${left}${timers.length > 1 ? ` (+${timers.length - 1})` : ''}`;
+  }
+
   function label(m) {
     switch (m) {
       case 'listening': return live || 'Слухаю…';
       case 'busy': return tool || (state === 'executing' ? 'Виконую…' : 'Думаю…');
       case 'reply': return tail(reply);
       case 'note': return note.text;
-      case 'hint': return asleep && !wake?.armed ? 'Сплю — поклич, і прокинусь' : (asleep ? `Сплю · скажи «${wake.name}»` : `Скажи «${wake.name}»`);
+      case 'hint': if (timers.length) return timerLabel();
+        return asleep && !wake?.armed ? 'Сплю — поклич, і прокинусь' : (asleep ? `Сплю · скажи «${wake.name}»` : `Скажи «${wake.name}»`);
       default: return 'Offgrid';
     }
   }
@@ -126,6 +136,8 @@
       case 'confirm-done': if (confirm?.id === event.id) confirm = null; break;
       case 'wake': wake = { armed: event.armed === true, name: String(event.name ?? '') }; break;
       case 'asleep': asleep = event.value === true; break;
+      case 'timers': timers = Array.isArray(event.list) ? event.list : []; break;
+      case 'timer-fired': note = null; open ? null : showNote(event.text, 'warn', 15000); return;
       case 'reset': reply = ''; tool = ''; note = null; confirm = null; lingering = false; break;
       case 'soft': showNote(event.text); return;
       case 'notice': showNote(event.text, 'warn', 6000); return;
@@ -156,12 +168,14 @@
     if (!open) window.offgrid.show();
   });
 
+  setInterval(() => { if (timers.length && body.dataset.mode === 'hint') text.textContent = label('hint'); }, 1000);
   render();
   window.offgrid.ready().then((info) => {
     if (!info) return;
     state = info.state;
     asleep = info.asleep === true;
     wake = info.wake ?? null;
+    timers = Array.isArray(info.timers) ? info.timers : [];
     open = info.open === true;
     render();
   }).catch(() => {});

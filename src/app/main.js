@@ -16,6 +16,8 @@ import { Agent } from '../agent/agent.js';
 import { ping, setGpuLayers, unloadModel, preloadModel, chat } from '../agent/ollama.js';
 import { decideGpuLayers, readVram } from '../agent/gpu.js';
 import { Resources } from '../agent/resources.js';
+import { Timers } from './timers.js';
+import { PC_ACTIONS } from '../tools/pc.js';
 import { nodeOs } from '../tools/util.js';
 import { Speech, VOICE_SCRIPT } from '../speech/client.js';
 import { SentenceSplitter } from '../speech/sentences.js';
@@ -24,7 +26,7 @@ import { iconPng } from './icon.js';
 import { Host } from './host.js';
 import { PanelServer } from './server.js';
 
-const WIDTH = 440, HEIGHT = 600; // вікно острівця: видно в ньому лише сам острівець, решта прозора
+const WIDTH = 500, HEIGHT = 700; // вікно острівця: видно в ньому лише сам острівець, решта прозора
 const CONFIRM_TIMEOUT_MS = 60_000;
 const AUTO_HIDE_MS = 9_000;
 const ERROR_SHOWN_MS = 5_000;
@@ -59,6 +61,7 @@ let hotkeySuspended = false; // гарячу клавішу тимчасово �
 let dialogOpen = false; // відкрито системне вікно вибору файлу: панель у цей час не ховаємо
 let turnCancelled = false;
 let listenNext = false;   // після цього ходу одразу слухати (відповідь перебито гарячою клавішею)
+let timers = null;        // таймери й нагадування
 let resources = null;     // «сон»: звільнення пам'яті, коли асистентом не користуються
 let waking = null;        // обіцянка поточного пробудження
 let gpuPlan = null;       // обіцянка поточного підбору розподілу відеопам'яті (або null)
@@ -756,7 +759,7 @@ const API = {
   ready: async () => ({
     state, busy: turnActive, asleep: !!resources?.asleep, hotkey: activeHotkey, model: config.model, warnings,
     speakReplies: config.speakReplies, voice: { status: speech?.status ?? 'off', error: speech?.error ?? null },
-    wake: { armed: !!wakeWait, name: config.wake.name }, open: panelOpen,
+    wake: { armed: !!wakeWait, name: config.wake.name }, open: panelOpen, timers: timers?.list() ?? [],
   }),
   ask: async ({ text }) => { if (typeof text === 'string' && text.trim()) startTextTurn(text); return true; },
   listen: async () => { if (state === 'listening') speech.stopListening(); else startListening(); return true; },
@@ -766,6 +769,19 @@ const API = {
   'new-chat': async () => { newChat(); return true; },
   hide: async () => { hidePanel(); return true; },
   show: async () => { showPanel(); return true; },
+  // Екран «Керування»: ті самі дії, що й в інструментів асистента, але з кнопок — тобто від самого користувача
+  control: async ({ action }) => {
+    if (action === 'sleep') { MENU_ACTIONS.sleep(); return { ok: true }; }
+    if (action === 'new_chat') { newChat(); return { ok: true, message: 'Нова розмова' }; }
+    const res = await controlPc(String(action), { manual: true });
+    logAction({ tool: 'control_pc', args: { action: String(action).slice(0, 30) }, decision: 'user', ok: !!res.ok, ...(res.ok ? {} : { error: res.error }) });
+    return res;
+  },
+  timer: async ({ action, minutes, id }) => {
+    if (action === 'cancel') return { ok: timers.cancel(String(id ?? '')).length > 0 };
+    if (action === 'set' && Number.isFinite(minutes)) return timers.add({ ms: minutes * 60_000 });
+    return { ok: false, error: 'Невідома дія' };
+  },
   settings: async ({ action, payload }) => (typeof action === 'string' ? handleSettings(action, payload) : null),
   ping: async () => ping(config),
   log: async () => readLog(150),
@@ -805,6 +821,37 @@ async function devScreenshot() {
   await new Promise((r) => setTimeout(r, 500));
   if (!(await ui.shot(SHOT))) console.error('Знімок не вдався');
   quit();
+}
+
+// Керування комп'ютером: спільне для інструмента control_pc і кнопок екрана «Керування».
+// Медіа-клавіші натискає оболонка (і лише їх); гучність кнопками доступна тільки з екрана керування.
+const MEDIA_KEYS = { play_pause: 0xB3, next_track: 0xB0, previous_track: 0xB1 };
+const VOLUME_KEYS = { volume_up: [0xAF, 5], volume_down: [0xAE, 5], mute: [0xAD, 1] };
+const PC_DONE = { play_pause: 'Перемкнув відтворення', next_track: 'Наступний трек', previous_track: 'Попередній трек',
+  minimize_all: 'Усі вікна згорнуто', restore_windows: 'Вікна повернуто', lock: 'Комп\'ютер заблоковано' };
+async function controlPc(action, { manual = false } = {}) {
+  let ok = false;
+  if (Object.hasOwn(MEDIA_KEYS, action)) ok = await ui.key(MEDIA_KEYS[action]);
+  else if (manual && Object.hasOwn(VOLUME_KEYS, action)) return { ok: await ui.key(...VOLUME_KEYS[action]) };
+  else if (action === 'minimize_all') ok = await ui.desktop(false);
+  else if (action === 'restore_windows') ok = await ui.desktop(true);
+  else if (action === 'lock') ok = (await nodeOs.run(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'rundll32.exe'), ['user32.dll,LockWorkStation'])).ok;
+  else if (action === 'screenshot') {
+    const dir = path.join(os.homedir(), 'Pictures', 'Offgrid');
+    const stamp = new Date().toISOString().slice(0, 19).replace('T', ' ').replaceAll(':', '-');
+    const file = path.join(dir, `Знімок ${stamp}.png`);
+    try { fs.mkdirSync(dir, { recursive: true }); } catch { return { ok: false, error: 'Не вдалося створити папку для знімків' }; }
+    return (await ui.screen(file, 0)).ok ? { ok: true, message: `Знімок екрана збережено: ${file}` } : { ok: false, error: 'Не вдалося зробити знімок екрана' };
+  } else return { ok: false, error: Object.hasOwn(PC_ACTIONS, action) ? 'Ця дія зараз недоступна' : 'Такої дії немає' };
+  return ok ? { ok: true, message: PC_DONE[action] } : { ok: false, error: 'Не вдалося виконати' };
+}
+
+// Таймер чи нагадування спрацювало: показуємо в острівці й кажемо вголос (простим голосом — він завжди напоготові)
+function timerFired(item, { late }) {
+  const text = (item.label ? `Нагадування: ${item.label}` : 'Таймер: час вийшов') + (late ? ' (час минув, поки мене було вимкнено)' : '');
+  logAction({ tool: 'timers', args: {}, decision: 'auto', ok: true, message: text });
+  send({ type: 'timer-fired', text });
+  if (!turnActive && !SHOT && config.speakReplies && speech?.ready) speech.speak(text).catch(() => {});
 }
 
 // «Подивись на екран» (tools/screen.js): знімок робить оболонка, розглядає його окремий запит до моделі БЕЗ
@@ -859,6 +906,7 @@ function quit() {
   agent?.cancel();
   if (config && !SHOT) unloadModel(config); // інакше Ollama тримала б модель у відеопам'яті ще пів години
   resources?.stop();
+  timers?.stop();
   speech?.stop();
   voice?.stop();
   ui.stop();
@@ -893,6 +941,8 @@ async function start() {
     openUrl: (url) => ui.open(url),
     allow: (change, payload) => (ALLOW_CHANGES.has(change) ? changeSettings(change, payload) : { ok: false, error: 'Невідома зміна' }),
     see: lookAtScreen,
+    pc: controlPc,
+    get timers() { return timers; },
   };
   config = loadConfig({ toolModes: TOOL_MODES }).config;
   agent = new Agent({
@@ -937,6 +987,12 @@ async function start() {
     },
   });
 
+  timers = new Timers({
+    file: SHOT ? null : path.join(DATA_DIR, 'timers.json'),
+    onFire: timerFired,
+    onChange: (list) => send({ type: 'timers', list }),
+  });
+
   resources = new Resources({
     getConfig: () => config,
     isBusy: () => turnActive || !!gpuPlan || !!waking || dialogOpen || quitting
@@ -977,6 +1033,7 @@ async function start() {
   ui.setTray({ icon: iconPng('idle'), tip: trayTip() });
   applyConfig(); // тут же запускаються мовні сервіси й реєструється гаряча клавіша
   if (!SHOT) resources.start();
+  timers.start();
   if (!SHOT) logAction({ tool: 'app', args: {}, decision: 'auto', ok: true, message: 'Offgrid запущено' });
   if (SHOT) devScreenshot(); else showPanel();
 }

@@ -186,6 +186,12 @@ export class Host extends EventEmitter {
   /** Знімок екрана, на якому зараз миша, у файл PNG (не ширший за max пікселів). Повертає { ok, w, h }. */
   async screen(file, max) { return this.#ask({ c: 'screen', path: file, max }, 20_000); }
 
+  /** Натискає медіа-клавішу (пауза, трек, гучність) times разів. Інших клавіш оболонка не натискає. */
+  async key(vk, times = 1) { return (await this.#ask({ c: 'key', vk, times })).ok === true; }
+
+  /** Згорнути всі вікна (restore: false) або повернути їх. */
+  async desktop(restore) { return (await this.#ask({ c: 'desktop', restore: restore === true })).ok === true; }
+
   stop() {
     this.#send({ c: 'quit' });
     setTimeout(() => this.#kill(), 1500).unref();

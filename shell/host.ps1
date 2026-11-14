@@ -3,7 +3,7 @@
 # trusts: PowerShell + .NET WinForms + the WebView2 runtime that ships with Windows 11.
 #
 # It has no logic of its own. The Node process (src/app/main.js) starts it and drives it:
-#   Node -> shell : one JSON object per line on stdin   (navigate, show, place, tray, menu, hotkey, pick, open, shot, screen, quit)
+#   Node -> shell : one JSON object per line on stdin   (navigate, show, place, tray, menu, hotkey, pick, open, shot, screen, key, desktop, quit)
 # The panel address (with its one-time key) arrives through stdin, never on the command line, so that other
 # programs cannot read it from the process list.
 #   shell -> Node : one JSON object per line on stdout  (ready, hotkey, tray-click, menu, blur, focus, moved, ...)
@@ -16,8 +16,8 @@
 # This file is ASCII-only on purpose: all user-visible text arrives from Node as UTF-8 JSON.
 param(
   [Parameter(Mandatory)][string]$DataDir,
-  [int]$Width = 440,
-  [int]$Height = 600
+  [int]$Width = 500,
+  [int]$Height = 700
 )
 $ErrorActionPreference = "Stop"
 $libs = Join-Path $PSScriptRoot "webview2"
@@ -60,6 +60,13 @@ public static class Native {
     [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr hIcon);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] static extern bool ReleaseCapture();
+    [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+    // Presses and releases one of the media / volume keys (0xAD..0xB3); nothing else can be typed this way
+    public static bool TapMediaKey(int vk) {
+        if (vk < 0xAD || vk > 0xB3) return false;
+        keybd_event((byte)vk, 0, 0, UIntPtr.Zero); keybd_event((byte)vk, 0, 2, UIntPtr.Zero);
+        return true;
+    }
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hWnd, StringBuilder name, int max);
@@ -339,6 +346,18 @@ function Invoke-Command-Line([string]$line) {
       $bmp.Save([string]$cmd.path, [System.Drawing.Imaging.ImageFormat]::Png)
       Emit @{ t = "reply"; id = $cmd.id; ok = $true; w = $bmp.Width; h = $bmp.Height }
       $bmp.Dispose()
+    }
+    "key" {
+      $n = [Math]::Max(1, [Math]::Min(10, [int]$cmd.times))
+      $ok = $true
+      for ($i = 0; $i -lt $n; $i++) { if (-not [Native]::TapMediaKey([int]$cmd.vk)) { $ok = $false; break } }
+      Emit @{ t = "reply"; id = $cmd.id; ok = $ok }
+    }
+    "desktop" {
+      # Minimise every window (show the desktop) or bring them back
+      $sh = New-Object -ComObject Shell.Application
+      if ([bool]$cmd.restore) { $sh.UndoMinimizeAll() } else { $sh.MinimizeAll() }
+      Emit @{ t = "reply"; id = $cmd.id; ok = $true }
     }
     "quit" { Stop-Shell }
   }

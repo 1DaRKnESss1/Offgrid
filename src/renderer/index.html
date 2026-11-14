@@ -31,6 +31,7 @@
     <span id="taint" hidden title="У цій розмові асистент бачив назви чи вміст файлів. Запис нотаток, пошук і відкриття сайтів тепер потребують твого дозволу. «Нова розмова» це скидає.">бачив файли</span>
     <span class="spacer"></span>
     <button id="speak" type="button" hidden aria-pressed="true"><span class="ic ic-sound"></span></button>
+    <button id="open-control" type="button" title="Керування: музика, вікна, таймери" aria-label="Керування"><span class="ic ic-grid"></span></button>
     <button id="open-settings" type="button" title="Налаштування: програми, папки, типи файлів, клавіша" aria-label="Налаштування"><span class="ic ic-sliders"></span></button>
     <button id="open-log" type="button" title="Журнал дій" aria-label="Журнал дій"><span class="ic ic-list"></span></button>
     <button id="new-chat" type="button" title="Нова розмова: очистити історію" aria-label="Нова розмова"><span class="ic ic-new"></span></button>
@@ -66,6 +67,14 @@
     <div id="settings-body" class="view-body"></div>
   </section>
 
+  <section id="view-control" class="view" hidden aria-label="Керування">
+    <div class="view-head">
+      <button id="control-back" type="button" title="Назад до розмови" aria-label="Назад"><span class="ic ic-back"></span></button>
+      <span class="view-title">Керування</span>
+    </div>
+    <div id="control-body" class="view-body tab-body"></div>
+  </section>
+
   <section id="view-log" class="view" hidden aria-label="Журнал дій">
     <div class="view-head">
       <button id="log-back" type="button" title="Назад до розмови" aria-label="Назад"><span class="ic ic-back"></span></button>
@@ -82,6 +91,7 @@
   <script src="bridge.js"></script>
   <script src="app.js"></script>
   <script src="settings.js"></script>
+  <script src="control.js"></script>
   <script src="island.js"></script>
 </body>
 </html>

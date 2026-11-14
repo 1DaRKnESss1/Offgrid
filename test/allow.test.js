@@ -210,3 +210,64 @@ test('програма з Microsoft Store: додається за іденти�
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ apps: { x: { name: 'X', appId: 'a_b12345678!App & calc.exe' }, y: { name: 'Y', appId: id, exe: 'notepad.exe' } }, folders: {}, fileTypes: [], readableTypes: [] }));
   assert.deepEqual(load().apps, {});
 });
+
+test('таймери: спрацьовують вчасно, скасовуються, переживають перезапуск', async () => {
+  const { Timers, msUntil, formatLeft } = await import('../src/app/timers.js');
+  let now = 1_000_000;
+  const pending = [];
+  const clock = { setTimeout: (fn, ms) => { const h = { fn, at: now + ms }; pending.push(h); return h; }, clearTimeout: (h) => { const i = pending.indexOf(h); if (i >= 0) pending.splice(i, 1); } };
+  const advance = (ms) => { now += ms; for (const h of [...pending]) if (h.at <= now) { pending.splice(pending.indexOf(h), 1); h.fn(); } };
+  const file = path.join(TMP, 'timers.json');
+  const fired = [];
+  const make = () => new Timers({ file, now: () => now, clock, onFire: (item, info) => fired.push([item.label, info.late]) });
+  const t = make();
+  t.start();
+  assert.equal(t.add({ ms: 500 }).ok, false, 'коротший за секунду');
+  assert.equal(t.add({ ms: 60_000, label: 'чай' }).ok, true);
+  assert.equal(t.add({ ms: 120_000, label: 'плита' }).ok, true);
+  advance(59_000);
+  assert.deepEqual(fired, []);
+  advance(1_500);
+  assert.deepEqual(fired, [['чай', false]]);
+  assert.equal(t.cancel('плит').length, 1);
+  assert.equal(t.list().length, 0);
+  // застосунок закрили, а час минув: після запуску таймер спрацьовує з позначкою «запізно»
+  t.add({ ms: 30_000, label: 'дзвінок' });
+  t.stop();
+  now += 3_600_000;
+  const again = make();
+  again.start();
+  assert.deepEqual(fired.at(-1), ['дзвінок', true]);
+  assert.equal(again.list().length, 0);
+
+  assert.equal(msUntil('19:30', new Date(2026, 10, 14, 19, 0)), 30 * 60_000);
+  assert.equal(msUntil('7:00', new Date(2026, 10, 14, 19, 0)), 12 * 3_600_000);
+  assert.equal(msUntil('25:00'), null);
+  assert.equal(formatLeft(95), '1:35');
+  assert.equal(formatLeft(3725), '1:02:05');
+});
+
+test('керування комп\'ютером і таймери: лише дії з переліку, а після читання файлів — з дозволу', async () => {
+  const { needsConfirm } = await import('../src/security/policy.js');
+  for (const name of ['control_pc', 'timers']) {
+    const tool = ALL_TOOLS.find((x) => x.name === name);
+    assert.equal(needsConfirm(tool, { confirm: {} }, 0), false, name);
+    assert.equal(needsConfirm(tool, { confirm: {} }, 2), true, name);
+  }
+  const done = [];
+  const s = session();
+  s.os.pc = async (action) => { done.push(action); return { ok: true, message: 'ок' }; };
+  assert.equal((await executeTool('control_pc', { action: 'play_pause' }, s)).result.ok, true);
+  assert.equal((await executeTool('control_pc', { action: 'format_disk' }, s)).result.ok, false);
+  assert.deepEqual(done, ['play_pause']);
+
+  const { Timers } = await import('../src/app/timers.js');
+  s.os.timers = new Timers();
+  const set = await executeTool('timers', { action: 'set', minutes: 20, text: 'вимкнути плиту' }, s);
+  assert.equal(set.result.ok, true, set.result.error);
+  assert.match(set.result.message, /вимкнути плиту/);
+  assert.equal((await executeTool('timers', { action: 'set' }, s)).result.ok, false, 'без часу');
+  assert.equal((await executeTool('timers', { action: 'list' }, s)).result.timers.length, 1);
+  assert.equal((await executeTool('timers', { action: 'cancel', text: 'плиту' }, s)).result.ok, true);
+  s.os.timers.stop();
+});

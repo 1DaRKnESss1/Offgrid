@@ -6,14 +6,15 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const api = window.offgrid;
-  const views = { chat: $('view-chat'), settings: $('view-settings'), log: $('view-log') };
+  const views = { chat: $('view-chat'), settings: $('view-settings'), log: $('view-log'), control: $('view-control') };
   const TABS = [['apps', 'Програми'], ['folders', 'Папки'], ['files', 'Файли'], ['other', 'Інше']];
   const TOOL_NAMES = {
     app: 'Застосунок', settings: 'Налаштування', open_app: 'Відкрити програму', close_app: 'Закрити програму',
     get_time: 'Час', get_system_info: 'Стан системи', change_volume: 'Гучність', open_folder: 'Відкрити папку',
     find_files: 'Пошук файлів', list_folder: 'Перегляд папки', open_file: 'Відкрити файл', read_text_file: 'Прочитати файл',
     write_note: 'Записати нотатку', list_notes: 'Список нотаток', read_note: 'Прочитати нотатку', delete_note: 'Видалити нотатку',
-    search_web: 'Пошук в інтернеті', open_website: 'Відкрити сайт',
+    search_web: 'Пошук в інтернеті', open_website: 'Відкрити сайт', allow_app: 'Дозволити програму', allow_folder: 'Дозволити папку',
+    allow_file_type: 'Дозволити тип файлів', look_at_screen: 'Погляд на екран', control_pc: 'Керування комп\'ютером', timers: 'Таймери',
   };
   const DECISIONS = {
     auto: ['виконано', 'ok'], confirmed: ['з твого дозволу', 'ok'], user: ['змінено тобою', 'ok'],
@@ -60,6 +61,7 @@
     document.body.dataset.view = name;
     if (name === 'settings') { if (options.tab) tab = options.tab; message = ''; request('get'); }
     else if (name === 'log') loadLog();
+    else if (name === 'control') window.offgridControl?.render();
     else $('input').focus();
   }
   window.offgridView = { show, get current() { return current; }, captureEnded() { capturing = false; render(); } };
