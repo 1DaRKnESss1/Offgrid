@@ -42,6 +42,7 @@ export class Agent {
     this.generation++; // запит, що ще виконується, побачить зміну й нічого не допише в нову розмову
     this.messages = [];
     this.taint = 0;
+    this.allowed = new Set(); // інструменти, які користувач дозволив «на цю розмову»
     this.lastUsed = Date.now();
     this.emit({ type: 'tainted', value: false });
   }
@@ -91,6 +92,7 @@ export class Agent {
       signal,
       confirm: this.confirm,
       denied: false,
+      get allowed() { return current() ? self.allowed : null; },
       get taint() { return self.taint; },
       set taint(level) {
         if (!current() || level <= self.taint) return;

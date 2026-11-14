@@ -6,7 +6,7 @@
   "type": "module",
   "main": "src/app/main.js",
   "scripts": {
-    "start": "node src/app/main.js",
+    "start": "node --disable-warning=ExperimentalWarning src/app/main.js",
     "test": "node --test",
     "smoke": "node scripts/smoke.js",
     "tool-eval": "node scripts/tool-eval.js",

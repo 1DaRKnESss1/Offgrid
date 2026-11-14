@@ -168,7 +168,7 @@ function askConfirm(request) {
       if (!p) return;
       clearTimeout(p.timer);
       pendingConfirms.delete(id);
-      send({ type: 'confirm-done', id, allow });
+      send({ type: 'confirm-done', id, allow: !!allow });
       setState('executing');
       resolve(allow);
     };
@@ -177,7 +177,7 @@ function askConfirm(request) {
     setState('confirming');
     // показуємо без перехоплення фокуса, щоб випадковий Enter в іншому вікні нічого не підтвердив
     showPanel({ focus: false });
-    send({ type: 'confirm', id, summary: request.summary, reason: request.reason, timeoutMs: CONFIRM_TIMEOUT_MS });
+    send({ type: 'confirm', id, summary: request.summary, reason: request.reason, scope: request.scope ?? null, timeoutMs: CONFIRM_TIMEOUT_MS });
   });
 }
 
@@ -797,7 +797,7 @@ function changeSettings(change, payload) {
   const result = editSettings(change, payload, TOOL_MODES);
   // у журнал — лише прості поля з відомими назвами
   const args = { change };
-  for (const field of ['key', 'name', 'closable', 'exe', 'dir', 'ext', 'list', 'on', 'hotkey', 'enabled']) {
+  for (const field of ['key', 'name', 'closable', 'exe', 'dir', 'ext', 'list', 'on', 'hotkey', 'enabled', 'host']) {
     if (['string', 'boolean'].includes(typeof payload?.[field])) args[field] = payload[field];
   }
   logAction({ tool: 'settings', args, decision: 'user', ok: result.ok, ...(result.ok ? {} : { error: result.error }) });
@@ -819,7 +819,7 @@ async function changeHotkey(hotkey) {
   return result;
 }
 
-const SIMPLE_CHANGES = new Set(['updateApp', 'removeApp', 'updateFolder', 'removeFolder', 'setFileType']);
+const SIMPLE_CHANGES = new Set(['updateApp', 'removeApp', 'updateFolder', 'removeFolder', 'setFileType', 'addTrustedSite', 'removeTrustedSite']);
 
 async function handleSettings(action, payload) {
   let result = { ok: true };
@@ -860,7 +860,9 @@ const API = {
   listen: async () => { if (state === 'listening') speech.stopListening(); else startListening(); return true; },
   'set-speak': async ({ value }) => { setSpeakReplies(value === true); return true; },
   cancel: async () => { cancelAll(); return true; },
-  confirm: async ({ id, allow }) => { pendingConfirms.get(String(id))?.finish(allow === true); return true; },
+  // allow: true — цей раз; 'conversation' — цей інструмент до кінця розмови; 'always' — назавжди для адреси з запиту.
+  // Чи ширший дозвіл узагалі можливий для цього запиту, вирішує політика (policy.js), а не панель.
+  confirm: async ({ id, allow }) => { pendingConfirms.get(String(id))?.finish(allow === true || allow === 'conversation' || allow === 'always' ? allow : false); return true; },
   'new-chat': async () => { newChat(); return true; },
   hide: async () => { hidePanel(); return true; },
   show: async () => { showPanel(); return true; },
@@ -1061,7 +1063,7 @@ async function start() {
   // файли, папки й сайти відкриває оболонка — системним механізмом, як подвійне клацання в Провіднику
   // allow — єдиний шлях, яким інструменти-пропозиції (tools/allow.js) змінюють білі списки: той самий запис із
   // перевірками, що й на екрані налаштувань, і лише після дозволу користувача кнопкою
-  const ALLOW_CHANGES = new Set(['addApp', 'addFolder', 'setFileType']);
+  const ALLOW_CHANGES = new Set(['addApp', 'addFolder', 'setFileType', 'addTrustedSite']);
   const toolOs = {
     ...nodeOs,
     openPath: (p) => ui.open(p),

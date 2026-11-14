@@ -21,7 +21,7 @@
     listen: () => fire('listen'),
     setSpeak: (value) => fire('set-speak', { value: value === true }),
     cancel: () => fire('cancel'),
-    answerConfirm: (id, allow) => fire('confirm', { id: String(id), allow: allow === true }),
+    answerConfirm: (id, allow) => fire('confirm', { id: String(id), allow: allow === true || allow === 'conversation' || allow === 'always' ? allow : false }),
     newChat: () => fire('new-chat'),
     hide: () => fire('hide'),
     show: () => fire('show'),

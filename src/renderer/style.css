@@ -393,3 +393,11 @@ body[data-timer="on"] #island { background: conic-gradient(from var(--a), var(--
 body[data-timer="on"] #core { background: radial-gradient(120% 90px at 50% -30px, color-mix(in srgb, var(--c1) 22%, transparent), transparent 70%), linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,0) 60px), rgba(14, 14, 18, .94); }
 body[data-timer="on"] #pill-text { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 body[data-timer="on"] #pill .dot { box-shadow: 0 0 10px var(--state); animation: pulse 1.6s ease-in-out infinite; }
+
+/* ширші дозволи під основними кнопками запиту: помітні, але не головні */
+.pill-wider, .confirm-wider { display: flex; gap: 8px; margin-top: 6px; }
+.pill-wider button, .confirm-wider button { flex: 1; min-width: 0; border: 1px solid rgba(255,255,255,.12); background: transparent; color: var(--muted);
+  border-radius: 10px; padding: 4px 8px; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pill-wider button:hover:not(:disabled), .confirm-wider button:hover:not(:disabled) { color: var(--text); background: rgba(255,255,255,.08); }
+.site-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; border-radius: 12px; background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.07); }
+.site-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }

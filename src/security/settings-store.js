@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_CONFIG, SETTINGS_FILE } from '../paths.js';
-import { validateConfig, resolveExe, expandFolder, isValidHotkey, isStoreAppId, FILE_TYPE_GROUPS, OPENABLE, READABLE } from './config.js';
+import { validateConfig, resolveExe, expandFolder, isValidHotkey, isStoreAppId, isSiteName, FILE_TYPE_GROUPS, OPENABLE, READABLE } from './config.js';
 
 const KEY_RE = /^[a-z][a-z0-9_]{0,30}$/;
 const MAX_ITEMS = 60;
@@ -134,6 +134,19 @@ export const changes = {
     raw[list] = on === true ? [...rest, ext] : rest;
     return null;
   },
+  addTrustedSite(raw, { host }) {
+    const site = typeof host === 'string' ? host.trim().toLowerCase().replace(/^www\./, '') : '';
+    if (!isSiteName(site)) throw new Error('Потрібна адреса сайту на кшталт youtube.com');
+    const list = section(raw, 'trustedSites', 'list');
+    if (list.length >= 100) throw new Error('Забагато довірених сайтів');
+    if (!list.some((s) => String(s).toLowerCase() === site)) list.push(site);
+    return null;
+  },
+  removeTrustedSite(raw, { host }) {
+    const list = section(raw, 'trustedSites', 'list');
+    raw.trustedSites = list.filter((s) => String(s).toLowerCase() !== String(host).toLowerCase());
+    return null;
+  },
   setWake(raw, { enabled, name }) {
     if (raw.wake !== undefined && !isObject(raw.wake)) throw new Error('Розділ «wake» у settings.json записано неправильно — виправ його вручну.');
     const wake = raw.wake ?? (raw.wake = {});
@@ -206,5 +219,6 @@ export function settingsView(config, warnings = []) {
   return { editable: raw !== null, brokenMessage: raw === null ? BROKEN : null, moreApps: hidden('apps'), moreFolders: hidden('folders'), apps, folders, fileGroups, readable, hotkey: config.hotkey, warnings,
     flags: { speakReplies: !!config.speakReplies, followUp: !!config.followUp, yieldToOtherApps: !!config.yieldToOtherApps },
     wake: { enabled: !!config.wake?.enabled, name: config.wake?.name ?? '' },
+    trustedSites: [...(config.trustedSites ?? [])],
     idleUnloadMinutes: config.idleUnloadMinutes, voice: !!config.speech?.enabled };
 }

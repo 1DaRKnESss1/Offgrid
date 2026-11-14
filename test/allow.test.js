@@ -399,3 +399,53 @@ test('запитання про виділений текст: відповід�
   assert.equal(untrusted, true);
   assert.equal(s.taint, 2);
 });
+
+test('ширші дозволи: «на цю розмову» і «завжди для сайту» — лише для м\'яких запитів', async () => {
+  const { isTrustedSite } = await import('../src/tools/web.js');
+  const opened = [];
+  const make = (answer, taint = 2) => {
+    const s = session({ taint });
+    s.allowed = new Set();
+    s.os.openUrl = async (u) => { opened.push(u); return true; };
+    s.confirm = async (request) => { s.asked.push(request); return answer; };
+    return s;
+  };
+  // у «забрудненій» розмові сайт питає дозволу й пропонує обидва ширші варіанти
+  const once = make(true);
+  assert.equal((await executeTool('open_website', { url: 'https://www.youtube.com/watch?v=1' }, once)).result.ok, true);
+  assert.deepEqual(once.asked[0].scope, { conversation: true, always: 'youtube.com' });
+  assert.equal((await executeTool('open_website', { url: 'https://youtube.com/' }, once)).result.ok, true);
+  assert.equal(once.asked.length, 2, '«лише цей раз» наступного разу питає знову');
+
+  // «на цю розмову»: далі цей інструмент не питає, інші — питають
+  const conv = make('conversation');
+  await executeTool('open_website', { url: 'https://example.org/a' }, conv);
+  await executeTool('open_website', { url: 'https://other.example.com/' }, conv);
+  assert.equal(conv.asked.length, 1);
+  conv.confirm = async (r) => { conv.asked.push(r); return false; };
+  assert.equal((await executeTool('search_web', { query: 'щось' }, conv)).result.ok, false);
+  assert.equal(conv.asked.length, 2);
+
+  // «завжди для сайту»: сайт потрапляє в налаштування, і нова розмова про нього вже не питає
+  const always = make('always');
+  await executeTool('open_website', { url: 'https://www.youtube.com/' }, always);
+  assert.deepEqual(load().trustedSites, ['youtube.com']);
+  const next = make(false);
+  next.config = load();
+  assert.equal((await executeTool('open_website', { url: 'https://music.youtube.com/x' }, next)).result.ok, true, 'піддомен довіреного сайту');
+  assert.equal(next.asked.length, 0);
+  assert.equal((await executeTool('open_website', { url: 'https://youtube.com.evil.example/' }, next)).result.ok, false, 'схожа адреса — не довірена');
+  assert.equal(isTrustedSite('notyoutube.com', ['youtube.com']), false);
+
+  // запити режиму always ширших варіантів не мають, і хитра відповідь панелі їх не розширює
+  fs.writeFileSync(path.join(menu, 'Notepad.lnk'), ''); targets['Notepad.lnk'] = notepad;
+  const hard = make('conversation', 0);
+  await executeTool('allow_app', { name: 'Notepad' }, hard);
+  assert.deepEqual(hard.asked[0].scope, { conversation: false, always: null });
+  assert.equal(hard.allowed.size, 0);
+
+  // у налаштування не потрапляє те, що не є іменем сайту
+  for (const bad of ['http://evil', 'localhost', '127.0.0.1', 'a b.com', 'youtube.com/path', '']) assert.equal(editSettings('addTrustedSite', { host: bad }, TOOL_MODES).ok, false, bad);
+  assert.equal(editSettings('removeTrustedSite', { host: 'youtube.com' }, TOOL_MODES).ok, true);
+  assert.deepEqual(load().trustedSites, []);
+});

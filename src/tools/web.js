@@ -20,6 +20,14 @@ function normalizeUrl(input) {
   return url;
 }
 
+/** Адреса без «www.» — так сайт записується в довірені й так порівнюється. */
+const siteOf = (url) => url.hostname.toLowerCase().replace(/^www\./, '');
+/** Чи сайт (або його піддомен) є в списку довірених. */
+export function isTrustedSite(host, list) {
+  const h = String(host).toLowerCase().replace(/^www\./, '');
+  return [...(list ?? [])].some((t) => h === t || h.endsWith(`.${t}`));
+}
+
 export default [
   {
     name: 'search_web',
@@ -56,6 +64,15 @@ export default [
     describe: ({ url }) => {
       const u = normalizeUrl(url);
       return u ? `Відкрити в браузері сайт ${u.hostname} — повна адреса: ${u.toString()}` : `Відкрити в браузері адресу: ${str(url, 200)}`;
+    },
+    // сайт зі списку довірених відкривається без запиту навіть після читання файлів чи екрана
+    trusted: ({ url }, { config }) => { const u = normalizeUrl(url); return !!u && isTrustedSite(u.hostname, config.trustedSites); },
+    // кнопка «Завжди для …» у запиті дозволу
+    offerAlways: ({ url }, { os }) => {
+      const u = normalizeUrl(url);
+      if (!u || typeof os.allow !== 'function') return null;
+      const host = siteOf(u);
+      return { label: host, apply: () => os.allow('addTrustedSite', { host }) };
     },
     async run({ url }, { os }) {
       const u = normalizeUrl(url);

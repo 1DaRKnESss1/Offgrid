@@ -169,6 +169,14 @@
           onchange: (e) => request('setWake', { name: e.target.value }) })) : null,
       view.voice ? h('p', { class: 'help', text: 'Мікрофон слухає постійно, але асистент реагує лише на фразу зі своїм ім\'ям: «' + view.wake.name + ', котра година». Усе сказане без імені одразу відкидається — не зберігається й нікуди не передається; розпізнавання працює лише на цьому комп\'ютері. Закінчити розмову: «повернусь потім», «на цьому все».' }) : null,
       view.voice ? h('p', { class: 'help', text: 'Асистент слухає ще 5 секунд після своєї відповіді. Якщо ти мовчиш — розмова закінчується. Працює лише в розмові голосом і коли відповіді озвучуються.' }) : null,
+      h('div', { class: 'group-title', text: 'Довірені сайти' }),
+      ...(view.trustedSites ?? []).map((site) => h('div', { class: 'site-row' },
+        h('span', { text: site }),
+        h('button', { type: 'button', class: 'icon', title: 'Прибрати з довірених', 'aria-label': `Прибрати ${site}`, disabled: !view.editable,
+          onclick: () => request('removeTrustedSite', { host: site }) }, h('span', { class: 'ic ic-x' })))),
+      h('p', { class: 'help', text: (view.trustedSites ?? []).length
+        ? 'Ці сайти асистент відкриває без запиту навіть після того, як читав файли чи екран.'
+        : 'Поки порожньо. Коли асистент питатиме дозволу відкрити сайт, натисни «Завжди для …» — і сайт з\'явиться тут.' }),
       h('div', { class: 'group-title', text: 'Ресурси комп\'ютера' }),
       h('label', { class: 'check' },
         h('span', { text: 'Звільняти пам\'ять після простою:' }),

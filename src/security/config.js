@@ -22,7 +22,7 @@ export const OPENABLE = new Set(FILE_TYPE_GROUPS.flatMap((g) => g.types));
 // Читати вміст можна лише з простих текстових форматів
 export const READABLE = new Set(['.txt', '.md', '.csv', '.log', '.json', '.xml', '.ini', '.yml', '.yaml']);
 const CONFIRM_MODES = ['never', 'content', 'tainted', 'always'];
-const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'dictateHotkey', 'speakReplies', 'followUp', 'wake', 'gpuLayers', 'idleUnloadMinutes', 'yieldToOtherApps', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'confirm']);
+const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'dictateHotkey', 'speakReplies', 'followUp', 'wake', 'gpuLayers', 'idleUnloadMinutes', 'yieldToOtherApps', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'trustedSites', 'confirm']);
 
 const WINDIR = process.env.SystemRoot ?? 'C:\\Windows';
 
@@ -74,6 +74,10 @@ const exists = (p) => { try { fs.lstatSync(p); return true; } catch { return fal
 // запустився б замість справжнього.
 /** Ідентифікатор програми з Microsoft Store: «Видавець.Назва_код!Точка». */
 export const isStoreAppId = (id) => typeof id === 'string' && /^[A-Za-z0-9][\w.-]{2,120}_[a-z0-9]{8,20}![\w.-]{1,60}$/.test(id);
+
+/** Ім'я сайту для списку довірених: домен із крапкою, без протоколу, шляху, порту й IP-адрес. */
+export const isSiteName = (s) => typeof s === 'string' && s.length <= 100 && /^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(s) && !/^[\d.]+$/.test(s)
+  && !/(^|\.)(localhost|local|internal|lan|home|intranet)$/i.test(s);
 
 export function resolveExe(exe) {
   if (typeof exe !== 'string' || !/\.exe$/i.test(exe) || /["<>|*?\r\n]/.test(exe)) return null;
@@ -245,6 +249,16 @@ export function validateConfig(raw, defaults, toolModes = null) {
     if (!check(raw[key])) { warn(`Розділ «${key}» записано неправильно — цей список порожній`); return empty; }
     return raw[key];
   };
+
+  // Довірені сайти: їх асистент відкриває без запиту навіть у «забрудненій» розмові. Лише звичайні імена сайтів.
+  cfg.trustedSites = [];
+  if (raw.trustedSites !== undefined) {
+    if (!Array.isArray(raw.trustedSites)) warn('trustedSites має бути списком адрес сайтів — список довірених порожній');
+    else for (const site of raw.trustedSites.slice(0, 100)) {
+      if (isSiteName(site)) { if (!cfg.trustedSites.includes(site.toLowerCase())) cfg.trustedSites.push(site.toLowerCase()); }
+      else warn(`Довірений сайт «${String(site).slice(0, 60)}»: потрібна адреса на кшталт youtube.com, без https:// і шляху`);
+    }
+  }
 
   cfg.apps = {};
   for (const [key, a] of Object.entries(section('apps', isObject, {}))) {

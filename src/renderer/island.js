@@ -108,11 +108,16 @@
   }
 
   function showConfirm(event) {
-    confirm = { id: event.id, long: String(event.summary ?? '').length > 95 };
+    const wide = event.scope?.conversation === true || !!event.scope?.always;
+    confirm = { id: event.id, long: wide || String(event.summary ?? '').length > 95 };
+    $('pill-conversation').hidden = event.scope?.conversation !== true;
+    $('pill-always').hidden = !event.scope?.always;
+    if (event.scope?.always) $('pill-always').textContent = `Завжди для ${event.scope.always}`;
     $('pill-confirm-text').textContent = event.summary;
-    $('pill-allow').disabled = true;
+    const buttons = [$('pill-allow'), $('pill-conversation'), $('pill-always')];
+    for (const b of buttons) b.disabled = true;
     clearTimeout(allowTimer);
-    allowTimer = setTimeout(() => { $('pill-allow').disabled = false; }, ALLOW_DELAY_MS);
+    allowTimer = setTimeout(() => { for (const b of buttons) b.disabled = false; }, ALLOW_DELAY_MS);
   }
 
   window.addEventListener('offgrid-event', (e) => {
@@ -153,6 +158,8 @@
 
   $('pill-allow').addEventListener('click', () => { if (confirm) window.offgrid.answerConfirm(confirm.id, true); });
   $('pill-deny').addEventListener('click', () => { if (confirm) window.offgrid.answerConfirm(confirm.id, false); });
+  $('pill-conversation').addEventListener('click', () => { if (confirm) window.offgrid.answerConfirm(confirm.id, 'conversation'); });
+  $('pill-always').addEventListener('click', () => { if (confirm) window.offgrid.answerConfirm(confirm.id, 'always'); });
 
   // --- миша: потягнув — вікно рухається, клацнув по пігулці — панель розкривається ---
   // У розкритій панелі тягнути можна лише за заголовок: решта — текст, поля й кнопки.

@@ -127,9 +127,14 @@ function showConfirm(event) {
     ? 'Питаю, бо в цій розмові я бачив назви чи вміст файлів, а їм не можна довіряти як командам.'
     : 'Таку дію я ніколи не виконую без твого дозволу.';
   // кнопка «Дозволити» вмикається із затримкою
-  $('confirm-allow').disabled = true;
+  // ширші дозволи пропонуємо лише там, де їх допускає політика (event.scope)
+  const wider = [[$('confirm-conversation'), event.scope?.conversation === true], [$('confirm-always'), !!event.scope?.always]];
+  if (event.scope?.always) $('confirm-always').textContent = `Завжди для ${event.scope.always}`;
+  const buttons = [$('confirm-allow'), ...wider.map(([b]) => b)];
+  for (const [b, on] of wider) b.hidden = !on;
+  for (const b of buttons) b.disabled = true;
   clearTimeout(allowTimer);
-  allowTimer = setTimeout(() => { $('confirm-allow').disabled = false; }, ALLOW_DELAY_MS);
+  allowTimer = setTimeout(() => { for (const b of buttons) b.disabled = false; }, ALLOW_DELAY_MS);
   confirmBox.hidden = false;
 }
 
@@ -225,6 +230,8 @@ micBtn.addEventListener('click', () => window.offgrid.listen());
 speakBtn.addEventListener('click', () => window.offgrid.setSpeak(!speakReplies));
 $('confirm-allow').addEventListener('click', () => answerConfirm(true));
 $('confirm-deny').addEventListener('click', () => answerConfirm(false));
+$('confirm-conversation').addEventListener('click', () => answerConfirm('conversation'));
+$('confirm-always').addEventListener('click', () => answerConfirm('always'));
 $('new-chat').addEventListener('click', () => window.offgrid.newChat());
 $('close').addEventListener('click', () => window.offgrid.hide());
 

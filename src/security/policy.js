@@ -64,23 +64,36 @@ export async function executeTool(name, rawArgs, session) {
 
     let decision = 'auto';
     if (needsConfirm(tool, config, taint)) {
-      const refusal = { ok: false, error: 'Користувач не дозволив цю дію. Не повторюй її і не шукай обхідних шляхів.' };
-      // після першої відмови в межах одного запиту більше не питаємо: шквал запитів не має «дотиснути» дозвіл
-      if (session.denied) {
-        logAction({ ...entry, decision: 'auto-denied', ok: false });
-        return { result: refusal, untrusted: false };
+      // «М'який» запит — той, що з'являється лише через «забруднення» розмови. Тільки для нього користувач може
+      // дозволити ширше, ніж один раз: на всю розмову (для цього інструмента) або назавжди для конкретної
+      // адреси (довірений сайт). Запити режиму always — закрити програму, видалити, розширити білі списки —
+      // такого не мають ніколи: вони і є запобіжником.
+      const soft = confirmMode(tool, config) !== 'always';
+      if (soft && tool.trusted?.(args, ctx)) decision = 'trusted';
+      else if (soft && session.allowed?.has(tool.name)) decision = 'conversation';
+      else {
+        const refusal = { ok: false, error: 'Користувач не дозволив цю дію. Не повторюй її і не шукай обхідних шляхів.' };
+        // після першої відмови в межах одного запиту більше не питаємо: шквал запитів не має «дотиснути» дозвіл
+        if (session.denied) {
+          logAction({ ...entry, decision: 'auto-denied', ok: false });
+          return { result: refusal, untrusted: false };
+        }
+        const always = soft && tool.offerAlways ? tool.offerAlways(args, ctx) : null; // { label, apply() } або null
+        const answer = await session.confirm({
+          tool: tool.name,
+          summary: tool.describe ? tool.describe(args, ctx) : tool.name,
+          reason: soft ? 'tainted' : 'always',
+          scope: { conversation: soft && !!session.allowed, always: always?.label ?? null },
+        });
+        if (!answer) {
+          session.denied = true;
+          logAction({ ...entry, decision: 'denied', ok: false });
+          return { result: refusal, untrusted: false };
+        }
+        decision = 'confirmed';
+        if (soft && answer === 'conversation' && session.allowed) { session.allowed.add(tool.name); decision = 'confirmed-conversation'; }
+        if (soft && answer === 'always' && always) { try { always.apply(); decision = 'confirmed-always'; } catch { /* дозвіл на цей раз однаково діє */ } }
       }
-      const allowed = await session.confirm({
-        tool: tool.name,
-        summary: tool.describe ? tool.describe(args, ctx) : tool.name,
-        reason: confirmMode(tool, config) === 'always' ? 'always' : 'tainted',
-      });
-      if (!allowed) {
-        session.denied = true;
-        logAction({ ...entry, decision: 'denied', ok: false });
-        return { result: refusal, untrusted: false };
-      }
-      decision = 'confirmed';
     }
     if (session.signal?.aborted) {
       logAction({ ...entry, decision: 'cancelled', ok: false });
