@@ -8,6 +8,7 @@ import files from './files.js';
 import notes from './notes.js';
 import web from './web.js';
 import allow from './allow.js';
+import screen from './screen.js';
 
 // Підписи для панелі, коли інструмент нічого не «зробив», а лише щось дізнався
 export const TOOL_LABELS = {
@@ -18,9 +19,10 @@ export const TOOL_LABELS = {
   read_text_file: 'Прочитав файл',
   list_notes: 'Переглянув нотатки',
   read_note: 'Прочитав нотатку',
+  look_at_screen: 'Подивився на екран',
 };
 
-export const ALL_TOOLS = [...system, ...apps, ...files, ...notes, ...web, ...allow];
+export const ALL_TOOLS = [...system, ...apps, ...files, ...notes, ...web, ...allow, ...screen];
 
 export function activeTools(config) {
   return ALL_TOOLS.filter((t) => !t.available || t.available(config));

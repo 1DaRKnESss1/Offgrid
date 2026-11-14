@@ -3,7 +3,7 @@
 # trusts: PowerShell + .NET WinForms + the WebView2 runtime that ships with Windows 11.
 #
 # It has no logic of its own. The Node process (src/app/main.js) starts it and drives it:
-#   Node -> shell : one JSON object per line on stdin   (navigate, show, place, tray, menu, hotkey, pick, open, shot, quit)
+#   Node -> shell : one JSON object per line on stdin   (navigate, show, place, tray, menu, hotkey, pick, open, shot, screen, quit)
 # The panel address (with its one-time key) arrives through stdin, never on the command line, so that other
 # programs cannot read it from the process list.
 #   shell -> Node : one JSON object per line on stdout  (ready, hotkey, tray-click, menu, blur, focus, moved, ...)
@@ -314,6 +314,31 @@ function Invoke-Command-Line([string]$line) {
       $fs = [System.IO.File]::Create([string]$cmd.path)
       $task = $wv.CoreWebView2.CapturePreviewAsync([Microsoft.Web.WebView2.Core.CoreWebView2CapturePreviewImageFormat]::Png, $fs)
       [void]$script:tasks.Add(@{ task = $task; stream = $fs; id = $cmd.id })
+    }
+    "screen" {
+      # A picture of the screen the mouse is on, for the assistant's "look at the screen" tool. The island steps
+      # aside for a moment so that it is not in the picture. Saved where Node asks; Node deletes it right away.
+      $b = [System.Windows.Forms.Screen]::FromPoint([System.Windows.Forms.Cursor]::Position).Bounds
+      $was = $script:visible
+      if ($was) { $form.Hide(); [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 140 }
+      $bmp = New-Object System.Drawing.Bitmap($b.Width, $b.Height)
+      try {
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+        $g.Dispose()
+      } finally { if ($was) { [void][Native]::ShowWindow($form.Handle, 4) } }
+      $max = [int]$cmd.max
+      if ($max -ge 320 -and $b.Width -gt $max) {
+        $h = [int]($b.Height * $max / $b.Width)
+        $small = New-Object System.Drawing.Bitmap($max, $h)
+        $g = [System.Drawing.Graphics]::FromImage($small)
+        $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $g.DrawImage($bmp, 0, 0, $max, $h)
+        $g.Dispose(); $bmp.Dispose(); $bmp = $small
+      }
+      $bmp.Save([string]$cmd.path, [System.Drawing.Imaging.ImageFormat]::Png)
+      Emit @{ t = "reply"; id = $cmd.id; ok = $true; w = $bmp.Width; h = $bmp.Height }
+      $bmp.Dispose()
     }
     "quit" { Stop-Shell }
   }

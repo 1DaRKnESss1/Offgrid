@@ -183,6 +183,9 @@ export class Host extends EventEmitter {
   /** Знімок панелі у файл PNG (для розробки). */
   async shot(file) { return (await this.#ask({ c: 'shot', path: file }, 20_000)).ok === true; }
 
+  /** Знімок екрана, на якому зараз миша, у файл PNG (не ширший за max пікселів). Повертає { ok, w, h }. */
+  async screen(file, max) { return this.#ask({ c: 'screen', path: file, max }, 20_000); }
+
   stop() {
     this.#send({ c: 'quit' });
     setTimeout(() => this.#kill(), 1500).unref();
