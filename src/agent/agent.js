@@ -3,7 +3,7 @@ import { chat } from './ollama.js';
 import { systemPrompt } from './prompt.js';
 import { toolSchemas, TOOL_LABELS } from '../tools/index.js';
 import { executeTool, toolMessageContent } from '../security/policy.js';
-import { stripFiller, announcesIntent, styleHint, requiredTool, memoryHint, isEcho } from './tone.js';
+import { stripFiller, announcesIntent, styleHint, requiredTool, memoryHint, isEcho, isCommand } from './tone.js';
 
 const MAX_STEPS = 6;
 const MAX_CALLS_PER_STEP = 4;
@@ -133,7 +133,7 @@ export class Agent {
         // в історію теж кладемо відповідь без чергового «чим ще допомогти?», щоб модель не вчилася на власній звичці
         const content = calls.length ? (message.content ?? '') : stripFiller(message.content);
         const lastReply = messages.findLast((m, i) => m.role === 'assistant' && i < last && m.content)?.content ?? '';
-        if (calls.length === 0 && !nudged && (announcesIntent(content, toolNames, toolsCalled > 0) || (toolsCalled === 0 && isEcho(content, input, lastReply)))) {
+        if (calls.length === 0 && !nudged && (announcesIntent(content, toolNames, toolsCalled > 0) || (toolsCalled === 0 && (isEcho(content, input, lastReply) || isCommand(input))))) {
           // сказано «зроблю», а не зроблено: цю репліку відкидаємо й просимо модель діяти
           nudged = true;
           nudge = [{ role: 'assistant', content }, { role: 'user', content: NUDGE }];

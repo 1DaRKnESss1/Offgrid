@@ -368,3 +368,24 @@ test('прощання наприкінці довгої фрази закінч
   for (const q of ['Запиши нотатку: я поки зайнятий, тому повернусь потім.', 'Нагадай мамі, що я сьогодні затримаюсь, тому повернусь пізніше',
     'Я повернусь потім, а зараз відкрий блокнот', 'Розкажи, що буває, коли кажуть «до побачення» в різних країнах світу']) assert.equal(isGoodbye(q), false, q);
 });
+
+test('пряма команда без жодного інструмента — не відповідь', async () => {
+  const { isCommand } = await import('../src/agent/tone.js');
+  for (const q of ['відкрий YouTube.', 'Відкрий сайт Gmail.', 'запусти калькулятор', 'Добре, тепер видали цей час і закрий блокнот.', 'будь ласка, знайди файл звіт', 'а тепер закрий блокнот']) assert.equal(isCommand(q), true, q);
+  for (const q of ['привіт', 'що ти вмієш?', 'чи можеш ти відкрити блокнот?', 'дякую', 'розкажи про відкриття Америки', 'котра година']) assert.equal(isCommand(q), false, q);
+});
+
+test('«створено», «збережено» без жодного інструмента — заява про дію, якої не було', async () => {
+  const { announcesIntent, isCommand } = await import('../src/agent/tone.js');
+  for (const r of ['Сценарій створено: «Музичний режим». Він відкриває Spotify і запускає пісню.', 'Нотатку записано.', 'Spotify додано до списку дозволених програм.']) assert.equal(announcesIntent(r, [], false), true, r);
+  assert.equal(announcesIntent('Spotify додано до списку дозволених програм.', [], true), false, 'після справжнього виклику це чесний звіт');
+  assert.equal(announcesIntent('Такого сценарію ще не створено, хочеш — зроблю?', [], false), false);
+  assert.equal(isCommand('Тепер зроби мені музичний сценарій, в якому буде відкриватися Spotify.'), true);
+});
+
+test('питання про диск і стан системи теж ведуть до інструмента напряму', async () => {
+  const { requiredTool } = await import('../src/agent/tone.js');
+  assert.equal(requiredTool('скільки вільного місця на диску?', ['get_system_info']).tool, 'get_system_info');
+  assert.equal(requiredTool('який стан системи', ['get_system_info']).tool, 'get_system_info');
+  assert.equal(requiredTool('відкрий диск D', ['get_system_info']), null);
+});

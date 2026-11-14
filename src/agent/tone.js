@@ -60,6 +60,9 @@ const CLAIMS_DONE = new RegExp(`^(?:(?:готово|гаразд|добре|ок
   + `записав|поставив|згорнув|повернув|додав|вимкнув|увімкнув|переклав|виправив|скоротив|заблокував|зберіг|надрукував|перемкнув|зменшив|`
   + `збільшив|запустив)${NOT_LETTER})`, 'iu');
 
+// «…створено», «…збережено», «…додано» на початку відповіді, коли нічого не викликано
+const CLAIMS_RESULT = /^[^.!?]{0,60}?(?<![\p{L}\p{N}])(?:створено|збережено|додано|записано|видалено|запущено|поставлено|налаштовано)(?![\p{L}\p{N}])/iu;
+
 // слова, з якими «зроблю» означає не «роблю зараз», а «можу», «потім» або «не буду»
 const NOT_NOW = new RegExp(`${START}(?:якщо|коли|щойно|скажи|скажеш|хочеш|дозволь|дозволиш|можу|можемо|вмію|здатен|пізніше|потім|згодом|
 спершу|спочатку|не\\s+(?:можу|буду|вмію|маю|стану))${NOT_LETTER}`.replace(/\n/g, ''), 'iu');
@@ -80,7 +83,7 @@ export function announcesIntent(text, toolNames = [], didSomething = false) {
   if (!didSomething && toolNames.some((name) => name && t.includes(name))) return true;
   if (NOT_NOW.test(t)) return false;
   if (WILL_DO.test(t)) return true;
-  return !didSomething && (DOING.test(t) || CLAIMS_DONE.test(t));
+  return !didSomething && (DOING.test(t) || CLAIMS_DONE.test(t) || CLAIMS_RESULT.test(t));
 }
 
 // ---------- «На цьому все» ----------
@@ -154,6 +157,7 @@ export const asksAboutSelection = (text) => ABOUT_SELECTION.test(String(text ?? 
 
 // ---------- Прохання, для яких інструмент потрібен напевно ----------
 const ASKS_TIME = /котра\s+(?:зараз\s+)?година|котрий\s+(?:зараз\s+)?час|скільки\s+(?:зараз\s+)?(?:часу|годин)|як(?:е|ий)\s+(?:сьогодні|зараз)\s+(?:число|день)|яка\s+(?:сьогодні\s+|зараз\s+)?дата/iu;
+const ASKS_SYSTEM = /вільн\p{L}*\s+місц|місця\s+на\s+диск|стан\p{L}*\s+систем|скільки\s+(?:оперативн|пам['’ʼ]?ят|відеопам)|завантажен\p{L}*\s+(?:процесор|систем)/iu;
 const SCREEN_NUDGE = 'Ти не бачиш екран, доки не викличеш інструмент look_at_screen. Виклич його зараз і розкажи, що він показав.';
 const SELECTION_QUESTION = /що\s+(?:тут\s+|там\s+|це\s+)?(?:написано|означає|сказано|за\s+текст)|про\s+що|поясни|розкажи|перекажи|прочитай|підсумуй|в\s+чому\s+суть|\?/iu;
 const SELECTION_CHANGE = /переклад|виправ|скороти|перепиш|зроби|зміни|заміни|відредагу|покращ|спрост/iu;
@@ -193,6 +197,7 @@ export function requiredTool(input, toolNames = [], { findScenario = null } = {}
   }
   if (has('look_at_screen') && asksAboutScreen(text)) return { tool: 'look_at_screen', args: { question: text }, nudge: SCREEN_NUDGE };
   if (has('get_time') && ASKS_TIME.test(text) && text.length <= 60) return { tool: 'get_time', args: {} };
+  if (has('get_system_info') && ASKS_SYSTEM.test(text) && text.length <= 80) return { tool: 'get_system_info', args: {} };
   // «запусти режим гри»: якщо такий сценарій справді збережено — запускаємо його, а не чекаємо, що модель здогадається
   const launch = has('scenario') && findScenario ? RUN_SCENARIO.exec(text) : null;
   if (launch) { const found = findScenario(launch[1]); if (found) return { tool: 'scenario', args: { action: 'run', name: found.name }, direct: true }; }
@@ -235,4 +240,14 @@ export function isEcho(reply, input, previousReply = '') {
   // «Добре, зроби гучніше.» — ті самі слова з коротким додатком теж луна
   if (r === i || (i.length >= 8 && r.includes(i) && r.length <= i.length + 12)) return true;
   return !!previousReply && r === bare(previousReply) && i !== r;
+}
+
+// ---------- Пряма команда ----------
+// «Відкрий…», «запусти…», «закрий…» — прохання щось ЗРОБИТИ на комп'ютері. Якщо на нього модель відповіла,
+// не викликавши жодного інструмента («YouTube вже відкрито»), це не відповідь: дії не було. Агент один раз
+// вимагає виконати. Запитання й розмови про можливості сюди не належать.
+const COMMAND = /^(?:будь\s+ласка[,\s]+|ну\s+|а\s+тепер\s+|тепер\s+|добре[,\s]+|ок(?:ей)?[,\s]+)*(?:відкрий|відкрити|запусти|закрий|знайди|запиши|видали|створи|зроби|додай|постав|вимкни|увімкни|ввімкни|згорни|заблокуй|нагадай|збережи|перемкни)(?![\p{L}\p{N}])/iu;
+export function isCommand(text) {
+  const t = String(text ?? '').trim();
+  return t.length <= 200 && !t.includes('?') && COMMAND.test(t);
 }
