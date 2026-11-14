@@ -927,13 +927,30 @@ const scenarioNames = () => { try { return store?.listScenarios().map((x) => x.n
 
 // Керування комп'ютером: спільне для інструмента control_pc і кнопок екрана «Керування».
 // Медіа-клавіші натискає оболонка (і лише їх); гучність кнопками доступна тільки з екрана керування.
-const MEDIA_KEYS = { play_pause: 0xB3, next_track: 0xB0, previous_track: 0xB1 };
+// Музика й відео: оболонка звертається до кожного плеєра окремо (пауза зупиняє все, що грає; «грай» відновлює
+// саме зупинене). Якщо це недоступно — лишається медіа-клавіша, яка діє лише на один «поточний» плеєр.
+const MEDIA_ACTIONS = { pause: ['pause', 0xB3], play: ['play', 0xB3], play_pause: ['toggle', 0xB3], next_track: ['next', 0xB0], previous_track: ['previous', 0xB1] };
 const VOLUME_KEYS = { volume_up: [0xAF, 5], volume_down: [0xAE, 5], mute: [0xAD, 1] };
-const PC_DONE = { play_pause: 'Перемкнув відтворення', next_track: 'Наступний трек', previous_track: 'Попередній трек',
-  minimize_all: 'Усі вікна згорнуто', restore_windows: 'Вікна повернуто', lock: 'Комп\'ютер заблоковано' };
+const PC_DONE = { minimize_all: 'Усі вікна згорнуто', restore_windows: 'Вікна повернуто', lock: 'Комп\'ютер заблоковано' };
+const playerName = (id) => String(id).replace(/\.exe$/i, '').replace(/^.*[\\!]/, '').replace(/_[a-z0-9]{8,}$/i, '').slice(0, 30);
+async function mediaControl(action) {
+  const [what, key] = MEDIA_ACTIONS[action];
+  const r = await ui.media(what);
+  if (r.unsupported) return (await ui.key(key)) ? { ok: true, message: 'Надіслав команду плеєру' } : { ok: false, error: 'Не вдалося' };
+  const who = (r.playing ?? []).map(playerName).filter(Boolean).join(', ');
+  if (what === 'pause' || (what === 'toggle' && (r.playing ?? []).length > 0)) {
+    return r.ok ? { ok: true, message: `Поставив на паузу: ${who || 'плеєр'}` } : { ok: false, error: 'Зараз нічого не грає — нема що ставити на паузу' };
+  }
+  if (what === 'play' || what === 'toggle') {
+    if (r.already) return { ok: true, message: `Уже грає: ${who}` };
+    return r.ok ? { ok: true, message: 'Відтворення продовжено' } : { ok: false, error: 'Немає плеєра, який можна запустити: відкрий музику чи відео' };
+  }
+  return r.ok ? { ok: true, message: what === 'next' ? 'Наступний трек' : 'Попередній трек' } : { ok: false, error: 'Немає плеєра, якому можна перемкнути трек' };
+}
+
 async function controlPc(action, { manual = false } = {}) {
   let ok = false;
-  if (Object.hasOwn(MEDIA_KEYS, action)) ok = await ui.key(MEDIA_KEYS[action]);
+  if (Object.hasOwn(MEDIA_ACTIONS, action)) return mediaControl(action);
   else if (manual && Object.hasOwn(VOLUME_KEYS, action)) return { ok: await ui.key(...VOLUME_KEYS[action]) };
   else if (action === 'minimize_all') ok = await ui.desktop(false);
   else if (action === 'restore_windows') ok = await ui.desktop(true);
@@ -944,7 +961,7 @@ async function controlPc(action, { manual = false } = {}) {
     const file = path.join(dir, `Знімок ${stamp}.png`);
     try { fs.mkdirSync(dir, { recursive: true }); } catch { return { ok: false, error: 'Не вдалося створити папку для знімків' }; }
     return (await ui.screen(file, 0)).ok ? { ok: true, message: `Знімок екрана збережено: ${file}` } : { ok: false, error: 'Не вдалося зробити знімок екрана' };
-  } else return { ok: false, error: Object.hasOwn(PC_ACTIONS, action) ? 'Ця дія зараз недоступна' : 'Такої дії немає' };
+  } else return { ok: false, error: Object.hasOwn(PC_ACTIONS, action) || action === 'play_pause' ? 'Ця дія зараз недоступна' : 'Такої дії немає' };
   return ok ? { ok: true, message: PC_DONE[action] } : { ok: false, error: 'Не вдалося виконати' };
 }
 
@@ -953,7 +970,10 @@ function timerFired(item, { late }) {
   const text = (item.label ? `Нагадування: ${item.label}` : 'Таймер: час вийшов') + (late ? ' (час минув, поки мене було вимкнено)' : '');
   logAction({ tool: 'timers', args: {}, decision: 'auto', ok: true, message: text });
   send({ type: 'timer-fired', text });
-  if (!turnActive && !SHOT && config.speakReplies && speech?.ready) speech.speak(text).catch(() => {});
+  if (SHOT) return;
+  ui.sound(); // сигнал звучить завжди, навіть коли озвучення відповідей вимкнене
+  // …а слова — трохи згодом, щоб не накладались на сигнал
+  if (config.speakReplies && speech?.ready) setTimeout(() => { if (!turnActive && !quitting) speech.speak(text).catch(() => {}); }, 2500);
 }
 
 // «Подивись на екран» (tools/screen.js): знімок робить оболонка, розглядає його окремий запит до моделі БЕЗ

@@ -7,7 +7,8 @@ import { msUntil, formatLeft } from '../app/timers.js';
 import { str } from './util.js';
 
 export const PC_ACTIONS = {
-  play_pause: 'поставити музику чи відео на паузу або продовжити',
+  pause: 'поставити на паузу все, що зараз грає (музику, відео в браузері)',
+  play: 'продовжити відтворення того, що було на паузі',
   next_track: 'наступний трек',
   previous_track: 'попередній трек',
   minimize_all: 'згорнути всі вікна (показати робочий стіл)',
@@ -29,7 +30,7 @@ export default [
     name: 'control_pc',
     confirm: 'tainted',
     schema: () => ({
-      description: 'Керує комп\'ютером: музика й відео, вікна, знімок екрана у файл, блокування. Гучність — окремим інструментом change_volume.',
+      description: 'Керує комп\'ютером: пауза й відтворення музики та відео в будь-якій програмі, перемикання треків, вікна, знімок екрана у файл, блокування. Гучність — окремим інструментом change_volume.',
       parameters: {
         type: 'object',
         properties: { action: { type: 'string', enum: Object.keys(PC_ACTIONS), description: Object.entries(PC_ACTIONS).map(([k, v]) => `${k} — ${v}`).join('; ') } },

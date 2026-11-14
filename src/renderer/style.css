@@ -386,3 +386,10 @@ button.icon { width: 26px; height: 26px; padding: 0; border-radius: 8px; display
 .control-message { position: sticky; bottom: 0; padding: 8px 12px; border-radius: 12px; background: rgba(30,30,36,.96); border: 1px solid rgba(255,255,255,.10); font-size: 12.5px; overflow-wrap: anywhere; }
 button.run { border-radius: 9px; background: rgba(108,182,255,.14); border: 0; padding: 4px 12px; color: var(--accent); }
 button.run:hover { background: rgba(108,182,255,.24); }
+
+/* Таймер іде: острівець не сірий, а «живий» — теплий контур, що повільно обертається, і яскравий відлік */
+body[data-timer="on"] { --c1: #ffb347; --c2: #5ff0d0; --state: #ffb347; }
+body[data-timer="on"] #island { background: conic-gradient(from var(--a), var(--c1), transparent 24%, transparent 46%, var(--c2) 62%, transparent 84%, var(--c1)); animation-duration: 5s; }
+body[data-timer="on"] #core { background: radial-gradient(120% 90px at 50% -30px, color-mix(in srgb, var(--c1) 22%, transparent), transparent 70%), linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,0) 60px), rgba(14, 14, 18, .94); }
+body[data-timer="on"] #pill-text { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+body[data-timer="on"] #pill .dot { box-shadow: 0 0 10px var(--state); animation: pulse 1.6s ease-in-out infinite; }

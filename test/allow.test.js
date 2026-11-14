@@ -257,9 +257,9 @@ test('керування комп\'ютером і таймери: лише ді
   const done = [];
   const s = session();
   s.os.pc = async (action) => { done.push(action); return { ok: true, message: 'ок' }; };
-  assert.equal((await executeTool('control_pc', { action: 'play_pause' }, s)).result.ok, true);
+  assert.equal((await executeTool('control_pc', { action: 'pause' }, s)).result.ok, true);
   assert.equal((await executeTool('control_pc', { action: 'format_disk' }, s)).result.ok, false);
-  assert.deepEqual(done, ['play_pause']);
+  assert.deepEqual(done, ['pause']);
 
   const { Timers } = await import('../src/app/timers.js');
   s.os.timers = new Timers();

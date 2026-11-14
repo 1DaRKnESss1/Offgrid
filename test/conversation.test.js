@@ -191,8 +191,10 @@ test('агент: нагадування про інструменти йде л
         // текст перед викликом інструмента — «вступ», який треба прибрати з екрана
         res.write(line({ message: { content: 'Зараз гляну. ' } }));
         res.write(line({ message: { content: '', tool_calls: [{ function: { name: 'get_time', arguments: {} } }] } }));
-      } else {
+      } else if (step === 2) {
         res.write(line({ message: { content: 'Зараз 16:50. Чим ще можу допомогти?' } }));
+      } else {
+        res.write(line({ message: { content: 'Будь ласка.' } }));
       }
       res.end(line({ message: { content: '' }, done: true }));
     });
@@ -217,7 +219,7 @@ test('агент: нагадування про інструменти йде л
     assert.ok(types.indexOf('reply-reset') > types.indexOf('reply-delta'), 'після вступу перед інструментом має бути reply-reset');
     assert.equal(events.filter((e) => e.type === 'tool')[0].name, 'get_time');
     // друга репліка: нагадування переїжджає на неї, зі старої зникає
-    step = 1;
+    step = 2;
     await agent.ask('дякую');
     const users = bodies.at(-1).messages.filter((m) => m.role === 'user');
     assert.equal(users.length, 2);
@@ -318,4 +320,32 @@ test('пам\'ять підтягується до запиту сама, а «�
   assert.equal(requiredTool('Увімкни сценарій роботи.', ['scenario'], { findScenario: find }).args.name, 'Режим роботи');
   assert.equal(requiredTool('запусти калькулятор', ['scenario'], { findScenario: find }), null, 'немає такого сценарію — це звичайна команда');
   store.close();
+});
+
+test('музичні команди виконує код: пауза, грай, наступний, попередній — і не плутає їх з іншим', async () => {
+  const { requiredTool, isEcho } = await import('../src/agent/tone.js');
+  const act = (q) => requiredTool(q, ['control_pc', 'scenario'])?.args.action ?? null;
+  for (const q of ['постав на паузу', 'Поставь песню на паузу.', 'Пісню на паузу, яка щас грає.', 'Постав пісню, яка наразі грає, на паузу. Це ти маєш зробити.',
+    'вимкни відео', 'зупини музику', 'Вимкни відео мені наразі, як і в Ютубі відкрито.', 'пауза']) assert.equal(act(q), 'pause', q);
+  for (const q of ['Я хочу, щоб пісня грала.', 'продовж музику', 'зніми з паузи', 'грай далі', 'увімкни музику']) assert.equal(act(q), 'play', q);
+  for (const q of ['наступна пісня', 'перемкни трек', 'наступний']) assert.equal(act(q), 'next_track', q);
+  for (const q of ['попередня пісня', 'поверни попередній трек']) assert.equal(act(q), 'previous_track', q);
+  for (const q of ['відкрий блокнот', 'зроби гучніше', 'запиши нотатку про музику', 'увімкни калькулятор', 'вимкни комп\'ютер', 'яка пісня найкраща у світі на твою думку?']) assert.equal(act(q), null, q);
+
+  assert.equal(isEcho('Постав на паузу.', 'постав на паузу'), true);
+  assert.equal(isEcho('Постав на паузу.', 'Пісню на паузу, яка щас грає.', 'Постав на паузу.'), true, 'повторила свою попередню репліку');
+  assert.equal(isEcho('Привіт. Слухаю.', 'привіт'), false);
+  assert.equal(isEcho('Так.', 'так'), false, 'надто коротке — не луна');
+});
+
+test('гучність теж виконує код; луна з коротким додатком розпізнається', async () => {
+  const { requiredTool, isEcho } = await import('../src/agent/tone.js');
+  const vol = (q) => requiredTool(q, ['change_volume', 'control_pc'])?.args ?? null;
+  assert.deepEqual(vol('зроби гучніше'), { action: 'up', amount: 'medium' });
+  assert.deepEqual(vol('трохи тихіше'), { action: 'down', amount: 'small' });
+  assert.deepEqual(vol('зроби набагато гучніше'), { action: 'up', amount: 'large' });
+  assert.equal(vol('вимкни звук').action, 'mute');
+  assert.equal(vol('розкажи тихіше про це і не поспішай, будь ласка, бо я нічого не встигаю зрозуміти'), null);
+  assert.equal(isEcho('Добре, зроби гучніше.', 'зроби гучніше'), true);
+  assert.equal(isEcho('Зробив гучніше на двадцять відсотків, як ти просив.', 'зроби гучніше'), false);
 });

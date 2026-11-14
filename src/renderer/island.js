@@ -87,6 +87,7 @@
     const m = mode();
     body.dataset.mode = m;
     body.dataset.tone = m === 'note' ? note.tone : '';
+    body.dataset.timer = m === 'hint' && timers.length ? 'on' : '';
     if (m !== 'open' && !m.startsWith('confirm')) text.textContent = label(m);
     $('panel').inert = m !== 'open';
     claim(m);

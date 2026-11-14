@@ -151,6 +151,16 @@ const SCREEN_NUDGE = 'Ти не бачиш екран, доки не викли�
 const SELECTION_NUDGE = 'Виділений текст бере інструмент edit_selection — тобі його бачити не треба. Виклич edit_selection просто зараз, передавши в task, що зробити з текстом.';
 
 // «запам'ятай, що…» і «що ти пам'ятаєш про…» — теж однозначні: модель інколи відповідає «запам'ятав», нічого не зберігши
+// Музика й відео: команди без варіантів, тож їх теж виконує код одразу. (На них модель інколи відповідала
+// луною — повторювала сказане — і нічого не робила.)
+const PLAYS = '(?:музик\\p{L}*|пісн\\p{L}*|песн\\p{L}*|трек\\p{L}*|відео|видео|відтворення|ютуб\\p{L}*|youtube|spotify|спотіфа\\p{L}*|плеєр\\p{L}*|фільм\\p{L}*|серіал\\p{L}*|звук\\p{L}*)';
+const MEDIA_PAUSE = new RegExp(`на\\s+пауз[уі]|^пауза[.!\\s]*$|(?:зупини|вимкни|виключи|стопни|припини)\\s+(?:\\p{L}+\\s+){0,2}${PLAYS}|^стоп\\s+${PLAYS}`, 'iu');
+const MEDIA_PLAY = new RegExp(`зніми\\s+(?:\\p{L}+\\s+){0,2}з\\s+паузи|(?:продовж\\p{L}*|віднови|відновлюй|запусти|увімкни|ввімкни|включи|грай)\\s+(?:\\p{L}+\\s+){0,2}${PLAYS}|^(?:грай|грай\\s+далі|продовжуй|продовж|плей)[.!\\s]*$|щоб\\s+(?:\\p{L}+\\s+){0,2}грал[аои]`, 'iu');
+const MEDIA_NEXT = new RegExp(`наступн\\p{L}*\\s+${PLAYS}|${PLAYS}\\s+далі|(?:перемкни|переключи|скіпни|пропусти)\\s+(?:\\p{L}+\\s+){0,2}${PLAYS}|^(?:наступн\\p{L}*|далі)[.!\\s]*$`, 'iu');
+const MEDIA_PREV = new RegExp(`попередн\\p{L}*\\s+${PLAYS}|(?:поверни|верни)\\s+(?:\\p{L}+\\s+){0,2}попередн|^(?:попередн\\p{L}*|назад)[.!\\s]*$`, 'iu');
+const VOLUME_UP = /гучніше|голосніше|додай\s+(?:гучност|звук)|збільш\p{L}*\s+(?:гучніст|звук)/iu;
+const VOLUME_DOWN = /тихіше|зменш\p{L}*\s+(?:гучніст|звук)|прибери\s+(?:гучніст|звук)/iu;
+const VOLUME_MUTE = /^(?:вимкни|виключи|увімкни|ввімкни|поверни)\s+звук[.!\s]*$|без\s+звуку/iu;
 const RUN_SCENARIO = /^(?:будь\s+ласка[,\s]+)?(?:запусти|запускай|увімкни|ввімкни|вмикай|включи|активуй|виконай)\s+(?:сценарій\s+)?(.{2,40}?)[.!\s]*$/iu;
 const REMEMBER = /^(?:будь\s+ласка[,\s]+)?запам['’ʼ]?ятай(?:[,:\s]+(?:що|будь\s+ласка))?[,:\s]+(.+)$/isu;
 const RECALL = /що\s+ти\s+(?:про\s+мене\s+)?пам['’ʼ]?ятаєш|що\s+я\s+(?:тобі\s+)?(?:казав|говорив|просив\s+запам)|ти\s+пам['’ʼ]?ятаєш/iu;
@@ -169,6 +179,14 @@ export function requiredTool(input, toolNames = [], { findScenario = null } = {}
   // «запусти режим гри»: якщо такий сценарій справді збережено — запускаємо його, а не чекаємо, що модель здогадається
   const launch = has('scenario') && findScenario ? RUN_SCENARIO.exec(text) : null;
   if (launch) { const found = findScenario(launch[1]); if (found) return { tool: 'scenario', args: { action: 'run', name: found.name }, direct: true }; }
+  if (has('change_volume') && text.length <= 60) {
+    const vol = VOLUME_UP.test(text) ? 'up' : VOLUME_DOWN.test(text) ? 'down' : VOLUME_MUTE.test(text) ? 'mute' : null;
+    if (vol) return { tool: 'change_volume', args: { action: vol, amount: /трохи|трішки|ледь|трошки/iu.test(text) ? 'small' : /набагато|значно|сильно|дуже/iu.test(text) ? 'large' : 'medium' }, direct: true };
+  }
+  if (has('control_pc') && text.length <= 90) {
+    const media = MEDIA_PAUSE.test(text) ? 'pause' : MEDIA_PLAY.test(text) ? 'play' : MEDIA_NEXT.test(text) ? 'next_track' : MEDIA_PREV.test(text) ? 'previous_track' : null;
+    if (media) return { tool: 'control_pc', args: { action: media }, direct: true };
+  }
   const fact = REMEMBER.exec(text);
   if (has('memory') && fact && fact[1].trim().length >= 3) return { tool: 'memory', args: { action: 'remember', text: fact[1].trim() } };
   if (has('memory') && RECALL.test(text)) return { tool: 'memory', args: { action: 'recall', text } };
@@ -187,3 +205,16 @@ export function memoryHint(store, text) {
 }
 // на привітання, подяку й зовсім короткі репліки пам'ять не підтягуємо
 const stemsWorthRecalling = (text) => String(text ?? '').trim().split(/\s+/).length >= 2;
+
+// ---------- Луна ----------
+// Модель іноді повторює слова користувача («постав на паузу» -> «Постав на паузу.») або свою попередню репліку.
+// Це не відповідь: агент один раз просить її відповісти по суті.
+const bare = (t) => String(t ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+export function isEcho(reply, input, previousReply = '') {
+  const r = bare(reply);
+  if (r.length < 4 || r.length > 120) return false;
+  const i = bare(input);
+  // «Добре, зроби гучніше.» — ті самі слова з коротким додатком теж луна
+  if (r === i || (i.length >= 8 && r.includes(i) && r.length <= i.length + 12)) return true;
+  return !!previousReply && r === bare(previousReply) && i !== r;
+}

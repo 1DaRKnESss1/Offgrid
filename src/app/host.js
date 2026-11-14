@@ -199,6 +199,15 @@ export class Host extends EventEmitter {
   /** Натискає медіа-клавішу (пауза, трек, гучність) times разів. Інших клавіш оболонка не натискає. */
   async key(vk, times = 1) { return (await this.#ask({ c: 'key', vk, times })).ok === true; }
 
+  /**
+   * Керування плеєрами напряму: 'pause' | 'play' | 'toggle' | 'next' | 'previous' | 'status'.
+   * Повертає { ok, players, playing: [назви програм], already, unsupported }.
+   */
+  async media(action) { return this.#ask({ c: 'media', action }, 12_000); }
+
+  /** Сигнал таймера (стандартний звук Windows). */
+  async sound() { return (await this.#ask({ c: 'sound' })).ok === true; }
+
   /** Згорнути всі вікна (restore: false) або повернути їх. */
   async desktop(restore) { return (await this.#ask({ c: 'desktop', restore: restore === true })).ok === true; }
 

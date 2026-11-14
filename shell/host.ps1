@@ -3,7 +3,7 @@
 # trusts: PowerShell + .NET WinForms + the WebView2 runtime that ships with Windows 11.
 #
 # It has no logic of its own. The Node process (src/app/main.js) starts it and drives it:
-#   Node -> shell : one JSON object per line on stdin   (navigate, show, place, tray, menu, hotkey, pick, open, shot, screen, key, desktop, type, copy, clip, quit)
+#   Node -> shell : one JSON object per line on stdin   (navigate, show, place, tray, menu, hotkey, pick, open, shot, screen, key, media, sound, desktop, type, copy, clip, quit)
 # The panel address (with its one-time key) arrives through stdin, never on the command line, so that other
 # programs cannot read it from the process list.
 #   shell -> Node : one JSON object per line on stdout  (ready, hotkey, tray-click, menu, blur, focus, moved, ...)
@@ -316,6 +316,62 @@ $hotkey.add_Pressed({ Emit @{ t = "hotkey" } })
 $hotkey2 = New-Object HotkeyWindow   # the dictation key
 $hotkey2.add_Pressed({ Emit @{ t = "hotkey2" } })
 
+# ---------- media players ----------
+# Windows keeps a list of everything that plays media (Spotify, a browser tab with YouTube, a video player).
+# A media key reaches only ONE of them - the "current" one. Here every player is addressed directly, so
+# "pause" really pauses whatever is playing, and "play" resumes exactly what was paused.
+$script:media = $null
+$script:pausedByUs = @()
+try {
+  Add-Type -AssemblyName System.Runtime.WindowsRuntime
+  $script:asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq "AsTask" -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+  $script:media = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]
+} catch { $script:media = $null }
+
+function Wait-Async($op, [Type]$type) {
+  $task = $script:asTask.MakeGenericMethod($type).Invoke($null, @($op))
+  $until = [DateTime]::Now.AddSeconds(3)
+  while (-not $task.IsCompleted -and [DateTime]::Now -lt $until) { Start-Sleep -Milliseconds 15 }
+  if ($task.IsCompleted -and -not $task.IsFaulted -and -not $task.IsCanceled) { return $task.Result }
+  return $null
+}
+
+# action: pause | play | toggle | next | previous | status. Returns @{ ok; players = how many were addressed; playing = names }
+function Invoke-Media([string]$action) {
+  if (-not $script:media) { return $null }
+  $mgr = Wait-Async ($script:media::RequestAsync()) $script:media
+  if (-not $mgr) { return $null }
+  $all = @($mgr.GetSessions())
+  $playing = @($all | Where-Object { $_.GetPlaybackInfo().PlaybackStatus.ToString() -eq "Playing" })
+  $names = @($playing | ForEach-Object { [string]$_.SourceAppUserModelId })
+  if ($action -eq "status") { return @{ ok = $true; players = $all.Count; playing = $names } }
+  if ($action -eq "toggle") { if ($playing.Count -gt 0) { $action = "pause" } else { $action = "play" } }
+  $targets = @()
+  if ($action -eq "pause") {
+    $targets = $playing
+    if ($targets.Count -gt 0) { $script:pausedByUs = $names }
+  } elseif ($action -eq "play") {
+    if ($playing.Count -gt 0) { return @{ ok = $true; players = 0; playing = $names; already = $true } }
+    $targets = @($all | Where-Object { $script:pausedByUs -contains [string]$_.SourceAppUserModelId })
+    if ($targets.Count -eq 0) { $cur = $mgr.GetCurrentSession(); if ($cur) { $targets = @($cur) } }
+  } else {
+    if ($playing.Count -gt 0) { $targets = @($playing[0]) } else { $cur = $mgr.GetCurrentSession(); if ($cur) { $targets = @($cur) } }
+  }
+  $done = 0
+  foreach ($t in $targets) {
+    $op = $null
+    switch ($action) {
+      "pause" { $op = $t.TryPauseAsync() }
+      "play" { $op = $t.TryPlayAsync() }
+      "next" { $op = $t.TrySkipNextAsync() }
+      "previous" { $op = $t.TrySkipPreviousAsync() }
+    }
+    if ($op -and (Wait-Async $op ([bool]))) { $done++ }
+  }
+  return @{ ok = ($done -gt 0); players = $done; playing = $names }
+}
+
 # ---------- commands from Node ----------
 function Invoke-Command-Line([string]$line) {
   $cmd = $line | ConvertFrom-Json
@@ -419,6 +475,21 @@ function Invoke-Command-Line([string]$line) {
       $n = [Math]::Max(1, [Math]::Min(25, [int]$cmd.times))
       $ok = $true
       for ($i = 0; $i -lt $n; $i++) { if (-not [Native]::TapMediaKey([int]$cmd.vk)) { $ok = $false; break } }
+      Emit @{ t = "reply"; id = $cmd.id; ok = $ok }
+    }
+    "media" {
+      $r = $null
+      try { $r = Invoke-Media ([string]$cmd.action) } catch { $r = $null }
+      if ($null -eq $r) { Emit @{ t = "reply"; id = $cmd.id; ok = $false; unsupported = $true } }
+      else { Emit @{ t = "reply"; id = $cmd.id; ok = [bool]$r.ok; players = [int]$r.players; playing = @($r.playing); already = [bool]$r.already } }
+    }
+    "sound" {
+      # the timer alarm: a standard Windows sound, nothing of our own
+      $ok = $true
+      try {
+        $wav = Join-Path $env:SystemRoot "Media\Alarm01.wav"
+        if (Test-Path $wav) { $p = New-Object System.Media.SoundPlayer $wav; $p.Play() } else { [System.Media.SystemSounds]::Exclamation.Play() }
+      } catch { $ok = $false }
       Emit @{ t = "reply"; id = $cmd.id; ok = $ok }
     }
     "desktop" {
