@@ -293,3 +293,29 @@ test('прохання, де інструмент потрібен напевн�
   assert.equal(requiredTool('нагадай о котрій годині в мене зустріч, вона записана в нотатках про роботу на цей тиждень', all), null);
   assert.equal(requiredTool('котра година?', []), null, 'інструмента немає — нічого не нав\'язуємо');
 });
+
+test('«запам\'ятай…» і «що я казав…» ведуть до пам\'яті напряму', async () => {
+  const { requiredTool } = await import('../src/agent/tone.js');
+  const r = requiredTool('Запам\'ятай, що пароль від вайфаю на холодильнику', ['memory']);
+  assert.deepEqual(r, { tool: 'memory', args: { action: 'remember', text: 'пароль від вайфаю на холодильнику' } });
+  assert.equal(requiredTool('що я казав про курсову?', ['memory']).args.action, 'recall');
+  assert.equal(requiredTool('ти пам\'ятаєш, де мій пароль?', ['memory']).args.action, 'recall');
+  assert.equal(requiredTool('відкрий блокнот', ['memory']), null);
+});
+
+test('пам\'ять підтягується до запиту сама, а «запусти <сценарій>» розпізнає код', async () => {
+  const { memoryHint, requiredTool } = await import('../src/agent/tone.js');
+  const { Store } = await import('../src/app/store.js');
+  const store = new Store();
+  store.remember('Курсову з мереж треба здати двадцятого грудня');
+  assert.match(memoryHint(store, 'коли мені здавати курсову?'), /двадцятого грудня/);
+  assert.equal(memoryHint(store, 'відкрий блокнот'), '');
+  assert.equal(memoryHint(store, 'дякую'), '');
+  assert.equal(memoryHint(null, 'коли здавати курсову'), '');
+  store.saveScenario('Режим роботи', [{ tool: 'control_pc', args: { action: 'minimize_all' } }]);
+  const find = (n) => store.findScenario(n);
+  assert.deepEqual(requiredTool('запусти режим роботи', ['scenario'], { findScenario: find }), { tool: 'scenario', args: { action: 'run', name: 'Режим роботи' }, direct: true });
+  assert.equal(requiredTool('Увімкни сценарій роботи.', ['scenario'], { findScenario: find }).args.name, 'Режим роботи');
+  assert.equal(requiredTool('запусти калькулятор', ['scenario'], { findScenario: find }), null, 'немає такого сценарію — це звичайна команда');
+  store.close();
+});

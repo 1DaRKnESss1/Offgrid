@@ -7,6 +7,7 @@
   const api = window.offgrid;
   const root = $('control-body');
   let timers = [];
+  let scenarios = [];
   let message = '';
   let messageTimer = null;
 
@@ -65,6 +66,14 @@
         h('button', { type: 'button', class: 'icon', title: 'Скасувати', 'aria-label': 'Скасувати таймер', onclick: () => timer({ action: 'cancel', id: t.id }) }, h('span', { class: 'ic ic-x' })))),
       timers.length === 0 ? h('p', { class: 'help', text: 'Або скажи: «нагадай через 20 хвилин вимкнути плиту», «таймер на 5 хвилин», «розбуди о сьомій».' }) : null,
 
+      h('div', { class: 'group-title', text: 'Сценарії' }),
+      ...scenarios.map((name) => h('div', { class: 'timer-row' },
+        h('span', { class: 'ic ic-play' }),
+        h('span', { class: 'timer-name', text: name }),
+        h('button', { type: 'button', class: 'run', onclick: async () => { say('Запускаю…'); const r = await api.scenario('run', name).catch(() => null); say(r ? (r.ok === false ? r.error : r.message) : 'Не вдалося'); } }, 'Запустити'),
+        h('button', { type: 'button', class: 'icon', title: 'Видалити', 'aria-label': `Видалити сценарій ${name}`, onclick: async () => { await api.scenario('delete', name).catch(() => null); } }, h('span', { class: 'ic ic-x' })))),
+      scenarios.length === 0 ? h('p', { class: 'help', text: 'Сценаріїв ще немає. Скажи, наприклад: «створи сценарій режим гри: відкрий Steam і Discord і зроби гучніше» — і підтвердь кнопкою.' }) : null,
+
       h('div', { class: 'group-title', text: 'Асистент' }),
       h('div', { class: 'tiles two' }, big('ic-moon', 'Звільнити відеопам\'ять', 'sleep'), big('ic-new', 'Нова розмова', 'new_chat')),
       message ? h('div', { class: 'control-message', role: 'status', text: message }) : null,
@@ -74,10 +83,11 @@
   window.addEventListener('offgrid-event', (e) => {
     const event = e.detail;
     if (event.type === 'timers') { timers = Array.isArray(event.list) ? event.list : []; render(); }
+    if (event.type === 'scenarios') { scenarios = Array.isArray(event.list) ? event.list : []; render(); }
   });
   setInterval(() => { for (const el of root.querySelectorAll('.timer-left')) el.textContent = left(Number(el.dataset.due)); }, 1000); // відлік
   window.offgridControl = { render };
-  api.ready().then((info) => { timers = Array.isArray(info?.timers) ? info.timers : []; render(); }).catch(() => {});
+  api.ready().then((info) => { timers = Array.isArray(info?.timers) ? info.timers : []; scenarios = Array.isArray(info?.scenarios) ? info.scenarios : []; render(); }).catch(() => {});
 
   $('open-control').addEventListener('click', () => window.offgridView.show(window.offgridView.current === 'control' ? 'chat' : 'control'));
   $('control-back').addEventListener('click', () => window.offgridView.show('chat'));

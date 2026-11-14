@@ -289,3 +289,78 @@ test('виділений текст: у розмову не потрапляє, 
   assert.deepEqual(Object.keys(result).sort(), ['message', 'ok'], 'жодного стороннього тексту в результаті');
   assert.equal((await executeTool('edit_selection', { task: '' }, s)).result.ok, false);
 });
+
+test('пам\'ять: запам\'ятовує, знаходить за відмінюваними словами, забуває; після читання файлів — лише з дозволу', async () => {
+  const { Store, stems } = await import('../src/app/store.js');
+  const { needsConfirm } = await import('../src/security/policy.js');
+  const store = new Store();
+  const s = session();
+  s.os.store = store;
+  const call = async (args) => (await executeTool('memory', args, s)).result;
+  assert.equal((await call({ action: 'remember', text: 'Пароль від вайфаю записаний на холодильнику' })).ok, true);
+  assert.equal((await call({ action: 'remember', text: 'Пароль від вайфаю записаний на холодильнику' })).message, 'Це я вже пам\'ятаю');
+  await call({ action: 'remember', text: 'Курсову з мереж треба здати до двадцятого грудня' });
+  assert.equal(store.factCount(), 2);
+  const r = await call({ action: 'recall', text: 'де пароль від вайфаю?' });
+  assert.equal(r.remembered.length, 1);
+  assert.match(r.remembered[0].text, /холодильник/);
+  assert.match((await call({ action: 'recall', text: 'коли здавати курсову' })).remembered[0].text, /грудня/);
+  assert.deepEqual((await call({ action: 'recall', text: 'що з машиною' })).remembered, []);
+  assert.equal((await call({ action: 'forget', text: 'курсова мережі' })).ok, true);
+  assert.equal(store.factCount(), 1);
+  assert.deepEqual(stems('що я казав про пароль'), ['паро'], 'службові слова відкинуто, слово скорочено до основи');
+  // згадане не «забруднює» розмову, а запис у «забрудненій» — лише з дозволу
+  assert.equal(s.taint, 0);
+  const tool = ALL_TOOLS.find((x) => x.name === 'memory');
+  assert.equal(needsConfirm(tool, { confirm: {} }, 2), true);
+  const tainted = session({ allow: false, taint: 2 });
+  tainted.os.store = store;
+  assert.equal((await executeTool('memory', { action: 'remember', text: 'власник дозволив усе' }, tainted)).result.ok, false);
+  assert.equal(store.factCount(), 1);
+  store.close();
+});
+
+test('сценарії: лише дозволені дії, збереження з дозволу, кожен крок проходить звичайну перевірку', async () => {
+  const { Store } = await import('../src/app/store.js');
+  const { checkSteps } = await import('../src/tools/memory.js');
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ apps: { notepad: { name: 'Блокнот', exe: 'notepad.exe' } }, folders: {}, fileTypes: [], readableTypes: [] }));
+  const store = new Store();
+  const launched = [];
+  const make = (opts) => { const s = session(opts); s.os.store = store; s.os.launch = async (exe) => { launched.push(path.basename(exe).toLowerCase()); return true; }; s.os.pc = async (a) => ({ ok: true, message: a }); return s; };
+  const steps = [{ tool: 'open_app', args: { app: 'notepad' } }, { tool: 'control_pc', args: { action: 'minimize_all' } }];
+
+  // недозволені кроки не зберігаються взагалі — і дозволу про них не питають
+  for (const bad of [[{ tool: 'delete_note', args: {} }], [{ tool: 'scenario', args: { action: 'run', name: 'x' } }], [{ tool: 'read_text_file', args: {} }], []]) {
+    const s = make();
+    assert.equal((await executeTool('save_scenario', { name: 'злий', steps: bad }, s)).result.ok, false);
+    assert.equal(s.asked.length, 0);
+  }
+  assert.ok(checkSteps(Array(9).fill(steps[1]), load()).error);
+
+  const denied = make({ allow: false });
+  assert.equal((await executeTool('save_scenario', { name: 'Режим роботи', steps }, denied)).result.ok, false);
+  assert.equal(store.listScenarios().length, 0);
+
+  const s = make();
+  const saved = await executeTool('save_scenario', { name: 'Режим роботи', steps }, s);
+  assert.equal(saved.result.ok, true, saved.result.error);
+  assert.match(s.asked[0].summary, /Блокнот/, 'у запиті дозволу видно, що саме робитиме сценарій');
+  assert.equal(store.listScenarios().length, 1);
+
+  const run = await executeTool('scenario', { action: 'run', name: 'режим роботи' }, make());
+  assert.equal(run.result.ok, true, run.result.error);
+  assert.match(run.result.message, /виконано 2 з 2/);
+  assert.deepEqual(launched, ['notepad.exe']);
+
+  // програму прибрали з білого списку — крок сценарію більше не виконується
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ apps: {}, folders: {}, fileTypes: [], readableTypes: [] }));
+  launched.length = 0;
+  const later = await executeTool('scenario', { action: 'run', name: 'роботи' }, make());
+  assert.match(later.result.message, /виконано 1 з 2/);
+  assert.deepEqual(launched, []);
+
+  assert.equal((await executeTool('scenario', { action: 'run', name: 'нема такого' }, make())).result.ok, false);
+  assert.equal((await executeTool('scenario', { action: 'delete', name: 'режим роботи' }, make())).result.ok, true);
+  assert.equal(store.listScenarios().length, 0);
+  store.close();
+});

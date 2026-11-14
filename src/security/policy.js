@@ -50,6 +50,9 @@ export async function executeTool(name, rawArgs, session) {
   const taint = session.taint ?? 0;
   // taint — щоб запит дозволу міг попередити: прохання могло прийти з прочитаного тексту
   const ctx = { config, os: session.os, taint };
+  // call — для сценаріїв: вкладений виклик іде тим самим шляхом (перевірки, дозвіл, журнал). Глибше одного рівня
+  // не пускаємо: крок сценарію не може сам запускати сценарії.
+  if (!session.nested) ctx.call = async (n, a) => (await executeTool(n, a, { __proto__: session, nested: true })).result;
   const entry = { tool: tool.name, args, taint };
 
   try {

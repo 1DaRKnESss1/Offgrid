@@ -3,7 +3,7 @@ import { chat } from './ollama.js';
 import { systemPrompt } from './prompt.js';
 import { toolSchemas, TOOL_LABELS } from '../tools/index.js';
 import { executeTool, toolMessageContent } from '../security/policy.js';
-import { stripFiller, announcesIntent, styleHint, requiredTool } from './tone.js';
+import { stripFiller, announcesIntent, styleHint, requiredTool, memoryHint } from './tone.js';
 
 const MAX_STEPS = 6;
 const MAX_CALLS_PER_STEP = 4;
@@ -104,6 +104,9 @@ export class Agent {
       messages.push({ role: 'user', content: input });
       const tools = toolSchemas(this.config);
       const toolNames = tools.map((t) => t.function.name);
+      const store = this.os?.store ?? null;
+      const lookup = { findScenario: store ? (n) => store.findScenario(n) : null };
+      const recalled = memoryHint(store, input); // доречне з довгої пам'яті — одразу до запиту
       let nudge = null;      // слова моделі й наше «роби» — лише для наступного запиту, в історію не потрапляють
       let nudged = false;
       let toolsCalled = 0;
@@ -114,10 +117,15 @@ export class Agent {
         // Нагадування додаємо лише в запит (не в історію) і лише до останнього повідомлення користувача:
         // посеред розмови модель інакше схильна «розповісти», що зробила, не викликавши інструмент.
         const last = messages.findLastIndex((m) => m.role === 'user');
-        const request = messages.map((m, i) => (i === last ? { ...m, content: m.content + REMINDER + styleHint(m.content) } : m));
+        const request = messages.map((m, i) => (i === last ? { ...m, content: m.content + REMINDER + styleHint(m.content) + recalled } : m));
         if (nudge) { request.push(...nudge); nudge = null; }
-        const message = await chat(this.config, [{ role: 'system', content: systemPrompt(this.config) }, ...request], tools, signal,
-          (piece) => { streamed = true; emit({ type: 'reply-delta', text: piece }); });
+        // «Запусти <збережений сценарій>» — команда без варіантів: її виконує код одразу, не питаючи модель,
+        // яка могла б «запустити» сценарій лише на словах. Далі модель уже відповідає за результатом.
+        const direct = step === 0 ? requiredTool(input, toolNames, lookup) : null;
+        const message = direct?.direct
+          ? { content: '', tool_calls: [{ function: { name: direct.tool, arguments: direct.args } }] }
+          : await chat(this.config, [{ role: 'system', content: systemPrompt(this.config) }, ...request], tools, signal,
+            (piece) => { streamed = true; emit({ type: 'reply-delta', text: piece }); });
         if (!current()) throw new Error(CANCELLED);
         const calls = Array.isArray(message.tool_calls) ? message.tool_calls.slice(0, MAX_CALLS_PER_STEP) : [];
         // в історію теж кладемо відповідь без чергового «чим ще допомогти?», щоб модель не вчилася на власній звичці
@@ -132,7 +140,7 @@ export class Agent {
         // Прохання, для яких інструмент потрібен НАПЕВНО (виділений текст, екран, час): сама модель цього не бачить
         // і не знає. Якщо вона відповіла без інструмента — це вигадка або зайве перепитування. Спершу один раз
         // нагадуємо; якщо не допомогло (або нагадування вже витрачено) — потрібний інструмент викликає сам код.
-        const route = calls.length === 0 && toolsCalled === 0 ? requiredTool(input, toolNames) : null;
+        const route = calls.length === 0 && toolsCalled === 0 ? requiredTool(input, toolNames, lookup) : null;
         if (route && !nudged && route.nudge) {
           nudged = true;
           nudge = [{ role: 'assistant', content }, { role: 'user', content: route.nudge }];

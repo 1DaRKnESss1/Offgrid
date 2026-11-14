@@ -384,3 +384,5 @@ button.icon { width: 26px; height: 26px; padding: 0; border-radius: 8px; display
 .timer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .timer-left { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--accent); }
 .control-message { position: sticky; bottom: 0; padding: 8px 12px; border-radius: 12px; background: rgba(30,30,36,.96); border: 1px solid rgba(255,255,255,.10); font-size: 12.5px; overflow-wrap: anywhere; }
+button.run { border-radius: 9px; background: rgba(108,182,255,.14); border: 0; padding: 4px 12px; color: var(--accent); }
+button.run:hover { background: rgba(108,182,255,.24); }

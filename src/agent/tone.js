@@ -150,15 +150,40 @@ const ASKS_TIME = /котра\s+(?:зараз\s+)?година|котрий\s+(?
 const SCREEN_NUDGE = 'Ти не бачиш екран, доки не викличеш інструмент look_at_screen. Виклич його зараз і розкажи, що він показав.';
 const SELECTION_NUDGE = 'Виділений текст бере інструмент edit_selection — тобі його бачити не треба. Виклич edit_selection просто зараз, передавши в task, що зробити з текстом.';
 
+// «запам'ятай, що…» і «що ти пам'ятаєш про…» — теж однозначні: модель інколи відповідає «запам'ятав», нічого не зберігши
+const RUN_SCENARIO = /^(?:будь\s+ласка[,\s]+)?(?:запусти|запускай|увімкни|ввімкни|вмикай|включи|активуй|виконай)\s+(?:сценарій\s+)?(.{2,40}?)[.!\s]*$/iu;
+const REMEMBER = /^(?:будь\s+ласка[,\s]+)?запам['’ʼ]?ятай(?:[,:\s]+(?:що|будь\s+ласка))?[,:\s]+(.+)$/isu;
+const RECALL = /що\s+ти\s+(?:про\s+мене\s+)?пам['’ʼ]?ятаєш|що\s+я\s+(?:тобі\s+)?(?:казав|говорив|просив\s+запам)|ти\s+пам['’ʼ]?ятаєш/iu;
+
 /**
  * Якщо прохання однозначно потребує інструмента — який саме і з якими аргументами.
- * nudge — чим спершу нагадати моделі; без нього інструмент викликається одразу.
+ * nudge — чим спершу нагадати моделі; без нього інструмент викликається одразу, якщо модель його не викликала.
+ * direct — викликати ще до звернення до моделі (команда без варіантів).
  */
-export function requiredTool(input, toolNames = []) {
+export function requiredTool(input, toolNames = [], { findScenario = null } = {}) {
   const has = (name) => toolNames.includes(name);
   const text = String(input ?? '').trim().slice(0, 300);
   if (has('edit_selection') && asksAboutSelection(text)) return { tool: 'edit_selection', args: { task: text }, nudge: SELECTION_NUDGE };
   if (has('look_at_screen') && asksAboutScreen(text)) return { tool: 'look_at_screen', args: { question: text }, nudge: SCREEN_NUDGE };
   if (has('get_time') && ASKS_TIME.test(text) && text.length <= 60) return { tool: 'get_time', args: {} };
+  // «запусти режим гри»: якщо такий сценарій справді збережено — запускаємо його, а не чекаємо, що модель здогадається
+  const launch = has('scenario') && findScenario ? RUN_SCENARIO.exec(text) : null;
+  if (launch) { const found = findScenario(launch[1]); if (found) return { tool: 'scenario', args: { action: 'run', name: found.name }, direct: true }; }
+  const fact = REMEMBER.exec(text);
+  if (has('memory') && fact && fact[1].trim().length >= 3) return { tool: 'memory', args: { action: 'remember', text: fact[1].trim() } };
+  if (has('memory') && RECALL.test(text)) return { tool: 'memory', args: { action: 'recall', text } };
   return null;
 }
+
+// ---------- Пам'ять у розмові ----------
+// Те, що користувач просив запам'ятати і що стосується нинішньої репліки, код сам додає до запиту — модель
+// не мусить здогадатися «згадати». Іде лише в запит, не в історію.
+export function memoryHint(store, text) {
+  if (!store || typeof store.recall !== 'function') return '';
+  let facts = [];
+  try { facts = stemsWorthRecalling(text) ? store.recall(text, 3) : []; } catch { return ''; }
+  if (facts.length === 0) return '';
+  return `\n(Користувач раніше просив тебе запам'ятати: ${facts.map((f) => `«${f.text}»`).join('; ')}. Якщо це стосується його репліки — відповідай за цим, не кажи «не знаю».)`;
+}
+// на привітання, подяку й зовсім короткі репліки пам'ять не підтягуємо
+const stemsWorthRecalling = (text) => String(text ?? '').trim().split(/\s+/).length >= 2;

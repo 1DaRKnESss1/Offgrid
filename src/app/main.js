@@ -17,6 +17,8 @@ import { ping, setGpuLayers, unloadModel, preloadModel, chat } from '../agent/ol
 import { decideGpuLayers, readVram } from '../agent/gpu.js';
 import { Resources } from '../agent/resources.js';
 import { Timers } from './timers.js';
+import { Store } from './store.js';
+import { executeTool } from '../security/policy.js';
 import { PC_ACTIONS } from '../tools/pc.js';
 import { nodeOs } from '../tools/util.js';
 import { Speech, VOICE_SCRIPT } from '../speech/client.js';
@@ -62,6 +64,7 @@ let dialogOpen = false; // відкрито системне вікно вибо
 let turnCancelled = false;
 let listenNext = false;   // після цього ходу одразу слухати (відповідь перебито гарячою клавішею)
 let timers = null;        // таймери й нагадування
+let store = null;         // база даних: пам'ять і сценарії
 let resources = null;     // «сон»: звільнення пам'яті, коли асистентом не користуються
 let waking = null;        // обіцянка поточного пробудження
 let gpuPlan = null;       // обіцянка поточного підбору розподілу відеопам'яті (або null)
@@ -847,7 +850,7 @@ const API = {
   ready: async () => ({
     state, busy: turnActive, asleep: !!resources?.asleep, hotkey: activeHotkey, model: config.model, warnings,
     speakReplies: config.speakReplies, voice: { status: speech?.status ?? 'off', error: speech?.error ?? null },
-    wake: { armed: !!wakeWait, name: config.wake.name }, open: panelOpen, timers: timers?.list() ?? [],
+    wake: { armed: !!wakeWait, name: config.wake.name }, open: panelOpen, timers: timers?.list() ?? [], scenarios: scenarioNames(),
   }),
   ask: async ({ text }) => { if (typeof text === 'string' && text.trim()) startTextTurn(text); return true; },
   listen: async () => { if (state === 'listening') speech.stopListening(); else startListening(); return true; },
@@ -864,6 +867,14 @@ const API = {
     const res = await controlPc(String(action), { manual: true });
     logAction({ tool: 'control_pc', args: { action: String(action).slice(0, 30) }, decision: 'user', ok: !!res.ok, ...(res.ok ? {} : { error: res.error }) });
     return res;
+  },
+  // Сценарій з кнопки: ті самі кроки тим самим шляхом, що й на прохання голосом (перевірки й дозволи діють)
+  scenario: async ({ action, name }) => {
+    if (turnActive) return { ok: false, error: 'Зачекай, я ще виконую попередній запит.' };
+    const session = { config, os: toolOsRef, taint: 0, denied: false, confirm: askConfirm, signal: { aborted: false } };
+    const { result } = await executeTool('scenario', { action: action === 'delete' ? 'delete' : 'run', name: String(name ?? '') }, session);
+    if (state !== 'idle' && !turnActive) setState('idle');
+    return result;
   },
   timer: async ({ action, minutes, id }) => {
     if (action === 'cancel') return { ok: timers.cancel(String(id ?? '')).length > 0 };
@@ -910,6 +921,9 @@ async function devScreenshot() {
   if (!(await ui.shot(SHOT))) console.error('Знімок не вдався');
   quit();
 }
+
+let toolOsRef = null; // той самий набір можливостей, що отримують інструменти агента
+const scenarioNames = () => { try { return store?.listScenarios().map((x) => x.name) ?? []; } catch { return []; } };
 
 // Керування комп'ютером: спільне для інструмента control_pc і кнопок екрана «Керування».
 // Медіа-клавіші натискає оболонка (і лише їх); гучність кнопками доступна тільки з екрана керування.
@@ -995,6 +1009,7 @@ function quit() {
   if (config && !SHOT) unloadModel(config); // інакше Ollama тримала б модель у відеопам'яті ще пів години
   resources?.stop();
   timers?.stop();
+  store?.close();
   speech?.stop();
   voice?.stop();
   ui.stop();
@@ -1032,6 +1047,8 @@ async function start() {
     pc: controlPc,
     editSelection,
     get timers() { return timers; },
+    get store() { return store; },
+    scenariosChanged: () => send({ type: 'scenarios', list: scenarioNames() }),
   };
   config = loadConfig({ toolModes: TOOL_MODES }).config;
   agent = new Agent({
@@ -1075,6 +1092,11 @@ async function start() {
       if (speech?.status !== 'starting') planGpu();
     },
   });
+
+  toolOsRef = toolOs;
+  try { store = new Store(SHOT ? ':memory:' : path.join(DATA_DIR, 'offgrid.db')); } catch (e) {
+    console.error(`База даних не відкрилась: ${e.message}`); // пам'ять і сценарії будуть недоступні, решта працює
+  }
 
   timers = new Timers({
     file: SHOT ? null : path.join(DATA_DIR, 'timers.json'),

@@ -11,6 +11,7 @@ import allow from './allow.js';
 import screen from './screen.js';
 import pc from './pc.js';
 import selection from './selection.js';
+import memory from './memory.js';
 
 // Підписи для панелі, коли інструмент нічого не «зробив», а лише щось дізнався
 export const TOOL_LABELS = {
@@ -24,7 +25,7 @@ export const TOOL_LABELS = {
   look_at_screen: 'Подивився на екран',
 };
 
-export const ALL_TOOLS = [...system, ...apps, ...files, ...notes, ...web, ...allow, ...screen, ...pc, ...selection];
+export const ALL_TOOLS = [...system, ...apps, ...files, ...notes, ...web, ...allow, ...screen, ...pc, ...selection, ...memory];
 
 export function activeTools(config) {
   return ALL_TOOLS.filter((t) => !t.available || t.available(config));

@@ -27,6 +27,7 @@
     show: () => fire('show'),
     control: (action) => post('control', { action: String(action) }),
     timer: (payload) => post('timer', payload),
+    scenario: (action, name) => post('scenario', { action: String(action), name: String(name) }),
     ready: () => post('ready'),
     settings: (action, payload) => post('settings', { action: String(action), payload }),
     log: () => post('log'),
