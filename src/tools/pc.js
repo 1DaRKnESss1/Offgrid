@@ -38,6 +38,7 @@ export default [
       },
     }),
     describe: ({ action }) => `Керування комп'ютером: ${PC_ACTIONS[action] ?? action}`,
+    conversationKey: ({ action }) => (Object.hasOwn(PC_ACTIONS, action) ? action : null), // «на розмову» — саме цю дію
     async precheck({ action }) {
       return Object.hasOwn(PC_ACTIONS, action) ? null : { ok: false, error: 'Такої дії немає' };
     },

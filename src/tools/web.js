@@ -28,6 +28,16 @@ export function isTrustedSite(host, list) {
   return [...(list ?? [])].some((t) => h === t || h.endsWith(`.${t}`));
 }
 
+// Скільки знаків після назви сайту можна відкрити без запиту. Довірений сайт — це довіра до САЙТУ, а не до
+// будь-якої адреси на ньому: у довгому шляху чи рядку запиту можна винести прочитане (сторінки-перенаправлення,
+// пошук, заповнені форми). Коротка адреса — головна сторінка, розділ, відео — проходить, довга питає дозволу.
+const TRUSTED_TAIL = 60;
+export function isTrustedUrl(url, list) {
+  if (url.port || url.username || url.password) return false;
+  if ((url.pathname + url.search + url.hash).length > TRUSTED_TAIL) return false;
+  return isTrustedSite(url.hostname, list);
+}
+
 export default [
   {
     name: 'search_web',
@@ -66,7 +76,9 @@ export default [
       return u ? `Відкрити в браузері сайт ${u.hostname} — повна адреса: ${u.toString()}` : `Відкрити в браузері адресу: ${str(url, 200)}`;
     },
     // сайт зі списку довірених відкривається без запиту навіть після читання файлів чи екрана
-    trusted: ({ url }, { config }) => { const u = normalizeUrl(url); return !!u && isTrustedSite(u.hostname, config.trustedSites); },
+    trusted: ({ url }, { config }) => { const u = normalizeUrl(url); return !!u && isTrustedUrl(u, config.trustedSites); },
+    // «на цю розмову» — лише для цього самого сайту
+    conversationKey: ({ url }) => { const u = normalizeUrl(url); return u ? siteOf(u) : null; },
     // кнопка «Завжди для …» у запиті дозволу
     offerAlways: ({ url }, { os }) => {
       const u = normalizeUrl(url);

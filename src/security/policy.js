@@ -52,7 +52,15 @@ export async function executeTool(name, rawArgs, session) {
   const ctx = { config, os: session.os, taint };
   // call — для сценаріїв: вкладений виклик іде тим самим шляхом (перевірки, дозвіл, журнал). Глибше одного рівня
   // не пускаємо: крок сценарію не може сам запускати сценарії.
-  if (!session.nested) ctx.call = async (n, a) => (await executeTool(n, a, { __proto__: session, nested: true })).result;
+  // Вкладена сесія ділить із батьківською ВСЕ, зокрема відмову: якщо користувач відхилив один крок сценарію,
+  // решта кроків і подальші запити цього ходу відхиляються без нових запитань (рев'ю: раніше відмова губилась).
+  if (!session.nested) {
+    const child = Object.create(session, {
+      nested: { value: true },
+      denied: { get: () => session.denied, set: (v) => { session.denied = v; } },
+    });
+    ctx.call = async (n, a) => (await executeTool(n, a, child)).result;
+  }
   const entry = { tool: tool.name, args, taint };
 
   try {
@@ -65,12 +73,17 @@ export async function executeTool(name, rawArgs, session) {
     let decision = 'auto';
     if (needsConfirm(tool, config, taint)) {
       // «М'який» запит — той, що з'являється лише через «забруднення» розмови. Тільки для нього користувач може
-      // дозволити ширше, ніж один раз: на всю розмову (для цього інструмента) або назавжди для конкретної
-      // адреси (довірений сайт). Запити режиму always — закрити програму, видалити, розширити білі списки —
-      // такого не мають ніколи: вони і є запобіжником.
+      // дозволити ширше, ніж один раз — і лише КОНКРЕТНУ дію, а не інструмент загалом:
+      //   «на цю розмову» — те саме, про що питали (той самий сайт, та сама дія з переліку); інструмент сам каже,
+      //     що вважати «тим самим» (conversationKey), а якщо не каже — такого варіанта немає взагалі. Інакше один
+      //     клік відкривав би вбудованій інструкції тихий канал: будь-яку адресу, будь-який текст у пам'ять;
+      //   «завжди для …» — конкретна адреса в довірені сайти.
+      // Запити режиму always — закрити програму, видалити, розширити білі списки — ширших варіантів не мають.
       const soft = confirmMode(tool, config) !== 'always';
+      const scopeKey = soft && tool.conversationKey ? tool.conversationKey(args, ctx) : null;
+      const grant = typeof scopeKey === 'string' ? `${tool.name}\n${scopeKey}` : null;
       if (soft && tool.trusted?.(args, ctx)) decision = 'trusted';
-      else if (soft && session.allowed?.has(tool.name)) decision = 'conversation';
+      else if (grant && session.allowed?.has(grant)) decision = 'conversation';
       else {
         const refusal = { ok: false, error: 'Користувач не дозволив цю дію. Не повторюй її і не шукай обхідних шляхів.' };
         // після першої відмови в межах одного запиту більше не питаємо: шквал запитів не має «дотиснути» дозвіл
@@ -83,7 +96,7 @@ export async function executeTool(name, rawArgs, session) {
           tool: tool.name,
           summary: tool.describe ? tool.describe(args, ctx) : tool.name,
           reason: soft ? 'tainted' : 'always',
-          scope: { conversation: soft && !!session.allowed, always: always?.label ?? null },
+          scope: { conversation: !!grant && !!session.allowed, always: always?.label ?? null },
         });
         if (!answer) {
           session.denied = true;
@@ -91,7 +104,7 @@ export async function executeTool(name, rawArgs, session) {
           return { result: refusal, untrusted: false };
         }
         decision = 'confirmed';
-        if (soft && answer === 'conversation' && session.allowed) { session.allowed.add(tool.name); decision = 'confirmed-conversation'; }
+        if (grant && answer === 'conversation' && session.allowed) { session.allowed.add(grant); decision = 'confirmed-conversation'; }
         if (soft && answer === 'always' && always) { try { always.apply(); decision = 'confirmed-always'; } catch { /* дозвіл на цей раз однаково діє */ } }
       }
     }
@@ -102,8 +115,14 @@ export async function executeTool(name, rawArgs, session) {
 
     const result = await tool.run(args, ctx);
     logAction({ ...entry, decision, ok: !!result.ok, ...(result.ok ? { message: result.message } : { error: result.error }) });
-    const untrusted = !!tool.untrusted && !!result.ok;
-    if (untrusted) session.taint = Math.max(taint, session.taint ?? 0, TAINT_LEVEL[tool.untrusted] ?? 2);
+    // Сторонній текст буває й у невдалій відповіді (скажімо, пошкоджений документ), тож інструмент, що читає чуже,
+    // «забруднює» розмову незалежно від успіху. Крім того, результат сам може сказати, що в ньому сторонній текст
+    // (поле untrusted): так пам'ять позначає факти, записані в уже забрудненій розмові.
+    const level = TAINT_LEVEL[result.untrusted] ?? (tool.untrusted && (result.ok || result.foreign) ? TAINT_LEVEL[tool.untrusted] ?? 2 : 0);
+    delete result.untrusted;
+    delete result.foreign;
+    const untrusted = level > 0;
+    if (untrusted) session.taint = Math.max(taint, session.taint ?? 0, level);
     return { result, untrusted };
   } catch (e) {
     const result = { ok: false, error: `Помилка інструмента: ${e.message}` };

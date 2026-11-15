@@ -64,7 +64,7 @@ export default [
       if (exts.length === 0) return { ok: false, error: 'Документи цього типу не дозволено знаходити (налаштування → «Файли»).' };
       const readExts = exts.filter((e) => config.readableTypes.has(e));
       const r = await doc(ctx, { cmd: 'search', roots: Object.values(config.folders).map((f) => f.path), exts, read_exts: readExts, words, since, limit: MAX_FOUND, budget_s: 25 }, 60_000);
-      if (!r.ok) return { ok: false, error: `Пошук не вдався: ${r.error ?? 'невідома помилка'}` };
+      if (!r.ok) return { ok: false, foreign: true, error: 'Пошук документів не вдався.' };
       // кожен знайдений шлях ще раз проходить звичайну перевірку — як і для будь-якого іншого інструмента
       const found = [];
       for (const item of r.results ?? []) {
@@ -102,10 +102,12 @@ export default [
       const check = await checkFile(file, config.folders, config.readableTypes);
       if (!check.ok) return check;
       const r = await doc(ctx, { cmd: 'text', path: check.path, max_chars: 63000 }, 60_000);
-      if (!r.ok) return { ok: false, error: `Не вдалося прочитати документ: ${r.error ?? 'невідома помилка'}` };
+      // текст помилки складає розбирач документа з того, що знайшов у файлі, — моделі його не показуємо;
+      // foreign: файл уже відкривали, тож розмова «забруднюється», як і після вдалого читання
+      if (!r.ok) return { ok: false, foreign: true, error: `Не вдалося прочитати документ ${path.basename(check.path)}: файл пошкоджений, захищений або не того формату.` };
       const text = String(r.text ?? '').trim();
       const name = path.basename(check.path);
-      if (text.length < 20) return { ok: false, error: `У документі ${name} немає тексту, який можна прочитати (можливо, це скан — картинки без текстового шару).` };
+      if (text.length < 20) return { ok: false, foreign: true, error: `У документі ${name} немає тексту, який можна прочитати (можливо, це скан — картинки без текстового шару).` };
       if (text.length <= SHORT_ENOUGH || typeof os.summarize !== 'function') {
         return { ok: true, file: name, message: `Прочитав ${name}`, truncated: text.length > SHORT_ENOUGH, text: text.slice(0, SHORT_ENOUGH) };
       }

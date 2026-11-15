@@ -165,7 +165,7 @@ export default [
       if (['.docx', '.pdf'].includes(path.extname(check.path).toLowerCase())) {
         const job = { cmd: 'text', path: check.path, max_chars: MAX_READ_CHARS };
         const r = typeof os.doc === 'function' ? await os.doc(job) : await runDocTool(config.speech?.python ?? 'python.exe', job);
-        if (!r.ok) return { ok: false, error: `Не вдалося прочитати документ: ${r.error ?? 'невідома помилка'}` };
+        if (!r.ok) return { ok: false, foreign: true, error: 'Не вдалося прочитати документ: файл пошкоджений, захищений або не того формату.' };
         return { ok: true, file: path.basename(check.path), truncated: !!r.truncated, text: String(r.text ?? '').slice(0, MAX_READ_CHARS),
           ...(r.truncated ? { hint: 'Це лише початок. Щоб переказати документ цілком, виклич summarize_document.' } : {}) };
       }

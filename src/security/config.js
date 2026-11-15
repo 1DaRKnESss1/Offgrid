@@ -77,8 +77,13 @@ const exists = (p) => { try { fs.lstatSync(p); return true; } catch { return fal
 export const isStoreAppId = (id) => typeof id === 'string' && /^[A-Za-z0-9][\w.-]{2,120}_[a-z0-9]{8,20}![\w.-]{1,60}$/.test(id);
 
 /** Ім'я сайту для списку довірених: домен із крапкою, без протоколу, шляху, порту й IP-адрес. */
+// Домени, під якими будь-хто може завести власну сторінку: довіряти такому цілком — це довіряти всім.
+const SHARED_SITES = new Set(['github.io', 'gitlab.io', 'pages.dev', 'workers.dev', 'vercel.app', 'netlify.app', 'web.app', 'firebaseapp.com',
+  'blogspot.com', 'wordpress.com', 'herokuapp.com', 'appspot.com', 'azurewebsites.net', 'cloudfront.net', 'amazonaws.com', 'narod.ru', 'ucoz.ua', 'wixsite.com']);
 export const isSiteName = (s) => typeof s === 'string' && s.length <= 100 && /^(?!-)[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(s) && !/^[\d.]+$/.test(s)
-  && !/(^|\.)(localhost|local|internal|lan|home|intranet)$/i.test(s);
+  && !/(^|\.)(localhost|local|internal|lan|home|intranet)$/i.test(s)
+  && !/^(?:com|co|org|net|gov|edu|ac|in|biz|info|kiev|kyiv|kharkov|kharkiv|lviv|odessa|dp|zp)\.[a-z]{2}$/i.test(s) // «com.ua», «co.uk» — не сайт, а зона
+  && !SHARED_SITES.has(s.toLowerCase());
 
 export function resolveExe(exe) {
   if (typeof exe !== 'string' || !/\.exe$/i.test(exe) || /["<>|*?\r\n]/.test(exe)) return null;
@@ -101,6 +106,13 @@ function forbiddenFolder(real) {
   if (eq(real, os.homedir())) return 'усю папку користувача дозволяти не можна — обери конкретну папку в ній';
   if (within(WINDIR) || within(process.env.ProgramFiles) || within(process.env['ProgramFiles(x86)']) || within(process.env.ProgramData)
     || within(path.join(os.homedir(), 'AppData'))) return 'системні папки дозволяти не можна';
+  // …і в інший бік: папка, всередині якої лежить домашня папка чи системні (наприклад C:\Users), теж відкриває їх усі
+  const holds = (child) => child && isInside(child, real);
+  if (holds(os.homedir()) || holds(WINDIR) || holds(process.env.ProgramFiles) || holds(process.env['ProgramFiles(x86)']) || holds(process.env.ProgramData)) {
+    return 'у ній лежать системні папки або папка користувача — обери конкретну папку';
+  }
+  // папка самого асистента, та, що її містить, і папки з його кодом: читати власні програми йому ні до чого
+  if (eq(real, ROOT) || isInside(ROOT, real) || ['src', 'shell', 'speech', 'py', 'config', 'scripts'].some((d) => within(path.join(ROOT, d)))) return 'це папка самого асистента';
   if (eq(real, DATA_DIR) || isInside(DATA_DIR, real) || isInside(real, DATA_DIR)) return 'вона містить службові дані асистента';
   return null;
 }
