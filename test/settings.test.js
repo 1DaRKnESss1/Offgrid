@@ -146,7 +146,7 @@ test('типи файлів: лише з дозволеного переліку
   const { config } = load();
   assert.deepEqual([...config.fileTypes].sort(), ['.png', '.txt']);
   assert.deepEqual([...config.readableTypes].sort(), ['.md', '.txt']);
-  for (const [ext, list] of [['.exe', 'fileTypes'], ['.html', 'fileTypes'], ['.lnk', 'fileTypes'], ['.pdf', 'readableTypes'], ['.txt', 'apps'], ['.txt', '__proto__'], [null, 'fileTypes']]) {
+  for (const [ext, list] of [['.exe', 'fileTypes'], ['.html', 'fileTypes'], ['.lnk', 'fileTypes'], ['.mp3', 'readableTypes'], ['.txt', 'apps'], ['.txt', '__proto__'], [null, 'fileTypes']]) {
     assert.equal(editSettings('setFileType', { ext, list, on: true }, TOOL_MODES).ok, false, `${ext} ${list}`);
   }
   assert.deepEqual([...load().config.fileTypes].sort(), ['.png', '.txt']);

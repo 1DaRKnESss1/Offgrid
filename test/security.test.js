@@ -64,7 +64,7 @@ test('налаштування: виконувані типи й дивні exe 
   const { config, warnings } = validateConfig({
     ...defaults,
     fileTypes: ['.txt', '.EXE', '.ps1', 'bat', '.lnk', '.html', '.svg', '.docm', '.zip'],
-    readableTypes: ['.txt', '.pdf'],
+    readableTypes: ['.txt', '.mp3'],
     apps: {
       ok: { name: 'Ок', exe: 'notepad.exe', process: 'Notepad.exe' },
       args: { name: 'З аргументами', exe: 'cmd.exe /c calc' },

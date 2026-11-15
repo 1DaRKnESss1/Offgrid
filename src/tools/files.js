@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { str } from './util.js';
 import { checkFile } from '../security/pathguard.js';
+import { runDocTool } from './doctext.js';
 
 const SPECIAL = { this_pc: { name: 'Цей ПК', target: 'shell:MyComputerFolder' } };
 const MAX_RESULTS = 10, MAX_DEPTH = 4, MAX_LIST = 40;
@@ -150,7 +151,7 @@ export default [
     untrusted: 'content',
     available: (config) => config.readableTypes.size > 0 && folderKeys(config).length > 0,
     schema: (config) => ({
-      description: `Читає початок текстового файлу (${[...config.readableTypes].join(', ')}) з дозволеної папки. Шлях бери з результату find_files або list_folder`,
+      description: `Читає ПОЧАТОК файлу (${[...config.readableTypes].join(', ')}) з дозволеної папки. Шлях бери з результату пошуку. Цілий документ переказує summarize_document`,
       parameters: {
         type: 'object',
         properties: { path: { type: 'string', description: 'Повний шлях до файлу з результату пошуку' } },
@@ -160,6 +161,14 @@ export default [
     async run(args, { config, os }) {
       const check = await checkFile(args.path, config.folders, config.readableTypes);
       if (!check.ok) return check;
+      // Word і PDF — не текст: їхній вміст дістає окремий скрипт
+      if (['.docx', '.pdf'].includes(path.extname(check.path).toLowerCase())) {
+        const job = { cmd: 'text', path: check.path, max_chars: MAX_READ_CHARS };
+        const r = typeof os.doc === 'function' ? await os.doc(job) : await runDocTool(config.speech?.python ?? 'python.exe', job);
+        if (!r.ok) return { ok: false, error: `Не вдалося прочитати документ: ${r.error ?? 'невідома помилка'}` };
+        return { ok: true, file: path.basename(check.path), truncated: !!r.truncated, text: String(r.text ?? '').slice(0, MAX_READ_CHARS),
+          ...(r.truncated ? { hint: 'Це лише початок. Щоб переказати документ цілком, виклич summarize_document.' } : {}) };
+      }
       if (check.size > MAX_READ_BYTES) return { ok: false, error: 'Файл завеликий для читання (понад 256 КБ)' };
       const text = (await fs.readFile(check.path, 'utf8')).replace(/^﻿/, '');
       return {

@@ -17,6 +17,7 @@ import { ping, setGpuLayers, unloadModel, preloadModel, chat } from '../agent/ol
 import { decideGpuLayers, readVram } from '../agent/gpu.js';
 import { Resources } from '../agent/resources.js';
 import { Timers } from './timers.js';
+import { summarizeLong } from '../agent/summarize.js';
 import { Store } from './store.js';
 import { executeTool } from '../security/policy.js';
 import { PC_ACTIONS } from '../tools/pc.js';
@@ -767,6 +768,14 @@ async function editSelection(task, replace, mode = 'edit') {
   return { ok: true, message: `Готово: результат у буфері обміну (${out.length} знаків), вставити — Ctrl+V` };
 }
 
+// Переказ довгого документа частинами (agent/summarize.js): тут лише зв'язок із застосунком
+const summarizeText = (text, question, name) => summarizeLong({
+  ask: (system, user) => chat(config, [{ role: 'system', content: system }, { role: 'user', content: user }], undefined, null, () => {}, { temperature: 0.2, presence_penalty: 0 }),
+  text, question, name,
+  onStart: (parts, seconds) => send({ type: 'soft', text: `Читаю «${name}» частинами (${parts}) — це займе близько ${seconds} секунд.` }),
+  cancelled: () => turnCancelled || quitting,
+});
+
 function setOption(key, value) {
   if (!saveSetting(key, value)) return { ok: false, error: 'Не вдалося зберегти налаштування.' };
   config[key] = value;
@@ -1074,6 +1083,7 @@ async function start() {
     appVolume: (names, delta, mute) => ui.appVolume(names, delta, mute),
     volume: (action, presses) => ui.key({ up: 0xAF, down: 0xAE, mute: 0xAD }[action] ?? 0, presses),
     editSelection,
+    summarize: summarizeText,
     get timers() { return timers; },
     get store() { return store; },
     scenariosChanged: () => send({ type: 'scenarios', list: scenarioNames() }),

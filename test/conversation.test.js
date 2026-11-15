@@ -389,3 +389,26 @@ test('питання про диск і стан системи теж веду�
   assert.equal(requiredTool('який стан системи', ['get_system_info']).tool, 'get_system_info');
   assert.equal(requiredTool('відкрий диск D', ['get_system_info']), null);
 });
+
+test('переказ частинами: ріже по реченнях, питає кожну частину, зводить; скасування зупиняє', async () => {
+  const { splitParts, summarizeLong, MAX_PARTS } = await import('../src/agent/summarize.js');
+  const text = 'Перше речення про мережі. '.repeat(400);
+  const parts = splitParts(text);
+  assert.ok(parts.length > 1 && parts.length <= MAX_PARTS);
+  assert.equal(parts.join(''), text.slice(0, parts.join('').length), 'нічого не загублено й не переставлено');
+  assert.ok(parts.every((p) => p.endsWith('. ') || p === parts.at(-1)), 'розріз — на межі речення');
+  assert.equal(splitParts('x'.repeat(100000)).length, MAX_PARTS, 'надто довгий документ обмежується');
+
+  const calls = [];
+  const ask = async (system, user) => { calls.push(system); return { content: system.startsWith('Нижче') ? 'ПІДСУМОК' : (calls.length === 2 ? 'нічого' : `нотатка ${calls.length}`) }; };
+  const r = await summarizeLong({ ask, text, question: 'що про мережі?', name: 'д.docx' });
+  assert.deepEqual([r.ok, r.text, r.parts], [true, 'ПІДСУМОК', parts.length]);
+  assert.equal(calls.length, parts.length + 1);
+  assert.ok(calls.slice(0, -1).every((c) => c.includes('що про мережі?') && c.includes('це дані')));
+
+  let n = 0;
+  const stopped = await summarizeLong({ ask: async () => ({ content: 'x' }), text, cancelled: () => ++n > 2 });
+  assert.equal(stopped.ok, false);
+  const broken = await summarizeLong({ ask: async () => { throw new Error('Ollama не відповідає'); }, text });
+  assert.match(broken.error, /Ollama не відповідає/);
+});

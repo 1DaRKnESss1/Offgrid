@@ -20,7 +20,8 @@ export const FILE_TYPE_GROUPS = [
 ];
 export const OPENABLE = new Set(FILE_TYPE_GROUPS.flatMap((g) => g.types));
 // Читати вміст можна лише з простих текстових форматів
-export const READABLE = new Set(['.txt', '.md', '.csv', '.log', '.json', '.xml', '.ini', '.yml', '.yaml']);
+// .docx і .pdf читає окремий скрипт (py/doc_text.py), який дістає з них текст
+export const READABLE = new Set(['.txt', '.md', '.csv', '.log', '.json', '.xml', '.ini', '.yml', '.yaml', '.docx', '.pdf']);
 const CONFIRM_MODES = ['never', 'content', 'tainted', 'always'];
 const KNOWN_KEYS = new Set(['model', 'ollamaUrl', 'hotkey', 'dictateHotkey', 'speakReplies', 'followUp', 'wake', 'gpuLayers', 'idleUnloadMinutes', 'yieldToOtherApps', 'speech', 'apps', 'folders', 'fileTypes', 'readableTypes', 'trustedSites', 'confirm']);
 
@@ -306,7 +307,7 @@ export function validateConfig(raw, defaults, toolModes = null) {
     return out;
   };
   cfg.fileTypes = exts('fileTypes', OPENABLE, 'не можна дозволити — дозволяються лише документи, зображення, звук і відео');
-  cfg.readableTypes = exts('readableTypes', READABLE, 'не можна читати — лише прості текстові формати');
+  cfg.readableTypes = exts('readableTypes', READABLE, 'не можна читати — лише текстові формати, Word (.docx) і PDF');
 
   cfg.confirm = {};
   if (raw.confirm !== undefined && !isObject(raw.confirm)) warn('Розділ «confirm» записано неправильно — його проігноровано');

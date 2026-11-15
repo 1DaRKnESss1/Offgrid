@@ -12,6 +12,7 @@ import screen from './screen.js';
 import pc from './pc.js';
 import selection from './selection.js';
 import memory from './memory.js';
+import documents from './documents.js';
 
 // Підписи для панелі, коли інструмент нічого не «зробив», а лише щось дізнався
 export const TOOL_LABELS = {
@@ -20,13 +21,15 @@ export const TOOL_LABELS = {
   find_files: 'Пошукав файли',
   list_folder: 'Переглянув папку',
   read_text_file: 'Прочитав файл',
+  find_documents: 'Пошукав документи',
+  summarize_document: 'Прочитав документ',
   list_notes: 'Переглянув нотатки',
   read_note: 'Прочитав нотатку',
   look_at_screen: 'Подивився на екран',
   ask_selection: 'Прочитав виділене',
 };
 
-export const ALL_TOOLS = [...system, ...apps, ...files, ...notes, ...web, ...allow, ...screen, ...pc, ...selection, ...memory];
+export const ALL_TOOLS = [...system, ...apps, ...files, ...notes, ...web, ...allow, ...screen, ...pc, ...selection, ...memory, ...documents];
 
 export function activeTools(config) {
   return ALL_TOOLS.filter((t) => !t.available || t.available(config));
