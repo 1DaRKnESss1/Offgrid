@@ -42,25 +42,32 @@ export class Store {
         created_at TEXT NOT NULL
       );
     `);
+    this.#migrate();
+  }
+
+  // факт, записаний у розмові, де асистент уже читав сторонній текст, позначається: він міг прийти з того тексту
+  #migrate() {
+    const cols = this.db.prepare('PRAGMA table_info(facts)').all().map((c) => c.name);
+    if (!cols.includes('tainted')) this.db.exec('ALTER TABLE facts ADD COLUMN tainted INTEGER NOT NULL DEFAULT 0');
   }
 
   close() { try { this.db.close(); } catch { /* вже закрита */ } }
 
   // ---------- пам'ять ----------
   /** Запам'ятовує факт. Той самий текст удруге не дублюється. */
-  remember(text) {
+  remember(text, { tainted = false } = {}) {
     const fact = clean(text, MAX_FACT);
     if (fact.length < 3) return { ok: false, error: 'Нема чого запам\'ятовувати' };
     const same = this.db.prepare('SELECT id FROM facts WHERE lower(text) = lower(?)').get(fact);
     if (same) return { ok: true, id: same.id, known: true };
     if (this.db.prepare('SELECT count(*) AS n FROM facts').get().n >= MAX_FACTS) return { ok: false, error: 'Пам\'ять заповнена — спершу щось забудь' };
-    const r = this.db.prepare('INSERT INTO facts (text, created_at) VALUES (?, ?)').run(fact, new Date().toISOString());
+    const r = this.db.prepare('INSERT INTO facts (text, created_at, tainted) VALUES (?, ?, ?)').run(fact, new Date().toISOString(), tainted ? 1 : 0);
     return { ok: true, id: Number(r.lastInsertRowid) };
   }
 
   /** Факти, що стосуються запиту (найкращі збіги першими); без запиту — найновіші. */
-  recall(query = '', limit = 5) {
-    const all = this.db.prepare('SELECT id, text, created_at FROM facts ORDER BY id DESC').all();
+  recall(query = '', limit = 5, { trustedOnly = false } = {}) {
+    const all = this.db.prepare(`SELECT id, text, created_at, tainted FROM facts ${trustedOnly ? 'WHERE tainted = 0' : ''} ORDER BY id DESC`).all();
     const keys = stems(query);
     if (keys.length === 0) return all.slice(0, limit);
     return all

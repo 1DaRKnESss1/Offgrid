@@ -12,6 +12,10 @@ const SHORTCUTS_SCRIPT = path.join(ROOT, 'shell', 'shortcuts.ps1');
 const REG = path.join(SYSTEM32, 'reg.exe');
 const NOT_AN_APP = /unins|uninstall|redistributable|видал|readme|help|manual|документ|license|website|support/i;
 const NOT_A_GAME_EXE = /unins|crash|redist|setup|install|vc_?redist|dxsetup|dotnet|anticheat|easyanticheat|battleye|helper|report|updater|cef|subprocess|unitycrashhandler|vconsole|^steam/i;
+// Командні оболонки й системні засоби в дозволені не пропонуємо: у відкрите вікно термінала міг би потрапити
+// текст (диктування, заміна виділеного). Хто справді хоче — додасть сам кнопкою в налаштуваннях.
+const SHELL_EXE = /^(?:powershell|pwsh|cmd|wt|windowsterminal|bash|wsl|sh|conhost|mshta|wscript|cscript|regedit|reg|mmc|taskmgr|python\w*|node)\.exe$/i;
+const SHELL_NAME = /powershell|командн\p{L}*\s+рядок|command\s+prompt|термінал|terminal|редактор\s+реєстр|registry/iu;
 const MAX_FILES = 3000;
 
 export const norm = (s) => String(s ?? '').toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu, '');
@@ -124,7 +128,7 @@ export async function findApps(query, { run, env = process.env, dirs = shortcutD
     const targets = r.ok ? r.stdout.split(/\r?\n/) : [];
     shortcuts.forEach((s, i) => {
       const exe = (targets[i] ?? '').trim();
-      if (/\.exe$/i.test(exe) && fs.existsSync(exe) && !NOT_AN_APP.test(path.basename(exe))) results.push({ name: s.name, exe: path.resolve(exe), source: 'меню «Пуск»', score: s.score });
+      if (/\.exe$/i.test(exe) && fs.existsSync(exe) && !NOT_AN_APP.test(path.basename(exe)) && !SHELL_EXE.test(path.basename(exe)) && !SHELL_NAME.test(s.name)) results.push({ name: s.name, exe: path.resolve(exe), source: 'меню «Пуск»', score: s.score });
     });
   }
 
@@ -152,7 +156,7 @@ export async function findApps(query, { run, env = process.env, dirs = shortcutD
     for (const line of r.ok ? r.stdout.split(/\r?\n/) : []) {
       const [name, appId] = line.split('\t');
       const score = matchScore(name, query);
-      if (score && isStoreAppId((appId ?? '').trim()) && !NOT_AN_APP.test(name)) results.push({ name: clean(name), appId: appId.trim(), source: 'Microsoft Store', score });
+      if (score && isStoreAppId((appId ?? '').trim()) && !NOT_AN_APP.test(name) && !SHELL_NAME.test(name)) results.push({ name: clean(name), appId: appId.trim(), source: 'Microsoft Store', score });
     }
   }
 

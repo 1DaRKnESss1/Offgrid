@@ -218,11 +218,13 @@ export function requiredTool(input, toolNames = [], { findScenario = null } = {}
 
 // ---------- Пам'ять у розмові ----------
 // Те, що користувач просив запам'ятати і що стосується нинішньої репліки, код сам додає до запиту — модель
-// не мусить здогадатися «згадати». Іде лише в запит, не в історію.
+// не мусить здогадатися «згадати». Іде лише в запит, не в історію. Сюди потрапляють тільки факти, записані в
+// «чистій» розмові: записане після читання файлів чи екрана могло прийти з того тексту, тож до запиту як слова
+// користувача воно не додається (його можна лише згадати інструментом — уже як сторонній текст).
 export function memoryHint(store, text) {
   if (!store || typeof store.recall !== 'function') return '';
   let facts = [];
-  try { facts = stemsWorthRecalling(text) ? store.recall(text, 3) : []; } catch { return ''; }
+  try { facts = stemsWorthRecalling(text) ? store.recall(text, 3, { trustedOnly: true }) : []; } catch { return ''; }
   if (facts.length === 0) return '';
   return `\n(Користувач раніше просив тебе запам'ятати: ${facts.map((f) => `«${f.text}»`).join('; ')}. Якщо це стосується його репліки — відповідай за цим, не кажи «не знаю».)`;
 }

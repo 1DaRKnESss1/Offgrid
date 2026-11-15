@@ -64,18 +64,20 @@ export default [
         required: ['action'],
       },
     }),
-    describe: ({ action, text }) => (action === 'cancel' ? `Скасувати таймер${text ? ` «${str(text, 60)}»` : 'и'}` : `Поставити нагадування${text ? ` «${str(text, 60)}»` : ''}`),
-    async run({ action, minutes, seconds, at, text }, { os }) {
+    describe: ({ action, text }) => (action === 'cancel' ? `Скасувати таймер${text ? ` «${str(text, 120)}»` : 'и'}` : `Поставити нагадування${text ? ` «${str(text, 120)}»` : ''}`),
+    conversationKey: ({ action }) => (action === 'list' ? 'list' : null), // переглядати можна, ставити й скасовувати — щоразу з дозволу
+    async run({ action, minutes, seconds, at, text }, { os, taint }) {
       const timers = os.timers;
       if (!timers) return { ok: false, error: 'Таймери зараз недоступні' };
       if (action === 'list') {
         const list = timers.list();
         if (list.length === 0) return { ok: true, message: 'Таймерів немає', timers: [] };
         return { ok: true, message: `Таймерів: ${list.length}`,
-          timers: list.map((t) => ({ about: t.label || 'таймер', at: clock(t.due), left: formatLeft((t.due - Date.now()) / 1000) })) };
+          // мітку, поставлену після читання стороннього тексту, у нову розмову не повертаємо: користувач побачить її сам, коли час вийде
+          timers: list.map((t) => ({ about: t.tainted ? 'нагадування' : (t.label || 'таймер'), at: clock(t.due), left: formatLeft((t.due - Date.now()) / 1000) })) };
       }
       if (action === 'cancel') {
-        const gone = timers.cancel(str(text, 60));
+        const gone = timers.cancel(str(text, 120));
         return gone.length ? { ok: true, message: gone.length === 1 ? `Скасовано: ${gone[0].label || 'таймер'}` : `Скасовано таймерів: ${gone.length}` }
           : { ok: false, error: 'Такого таймера немає' };
       }
@@ -87,7 +89,7 @@ export default [
         if (ms === null) return { ok: false, error: 'Час треба назвати як ГГ:ХХ, наприклад 19:30' };
       }
       if (!ms) return { ok: false, error: 'Не вказано, на коли: потрібні хвилини, секунди або година. Спитай користувача.' };
-      const added = timers.add({ ms, label: str(text, 120) });
+      const added = timers.add({ ms, label: str(text, 120), tainted: taint > 0 });
       if (!added.ok) return added;
       const what = added.item.label ? `Нагадаю «${added.item.label}»` : 'Таймер поставлено';
       return { ok: true, message: `${what}: через ${span(ms)}, о ${clock(added.item.due)}` };

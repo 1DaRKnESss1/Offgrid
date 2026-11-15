@@ -45,7 +45,7 @@ export class Timers {
         this.items = (Array.isArray(saved) ? saved : [])
           .filter((t) => t && typeof t.id === 'string' && Number.isFinite(t.due))
           .slice(0, MAX_TIMERS)
-          .map((t) => ({ id: t.id, label: typeof t.label === 'string' ? t.label.slice(0, 120) : '', due: t.due }));
+          .map((t) => ({ id: t.id, label: typeof t.label === 'string' ? t.label.slice(0, 120) : '', due: t.due, ...(t.tainted ? { tainted: true } : {}) }));
       } catch { this.items = []; }
     }
     this.#tick(true);
@@ -56,10 +56,10 @@ export class Timers {
   list() { return [...this.items].sort((a, b) => a.due - b.due); }
 
   /** Додає таймер. Повертає { ok, item } або { ok: false, error }. */
-  add({ ms, label = '' }) {
+  add({ ms, label = '', tainted = false }) {
     if (!Number.isFinite(ms) || ms < MIN_MS || ms > MAX_MS) return { ok: false, error: 'Таймер можна поставити на час від секунди до семи днів' };
     if (this.items.length >= MAX_TIMERS) return { ok: false, error: 'Забагато таймерів одночасно — спершу скасуй якийсь' };
-    const item = { id: randomUUID(), label: String(label ?? '').replace(/[\x00-\x1f]/g, ' ').trim().slice(0, 120), due: this.now() + Math.round(ms) };
+    const item = { id: randomUUID(), label: String(label ?? '').replace(/[\x00-\x1f]/g, ' ').trim().slice(0, 120), due: this.now() + Math.round(ms), ...(tainted ? { tainted: true } : {}) };
     this.items.push(item);
     this.#changed();
     return { ok: true, item };

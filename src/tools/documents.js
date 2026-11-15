@@ -6,15 +6,14 @@
 import path from 'node:path';
 import { str } from './util.js';
 import { checkFile } from '../security/pathguard.js';
-import { runDocTool } from './doctext.js';
+import { runDocTool, pythonPath } from './doctext.js';
 
 const KINDS = { word: ['.docx', '.doc'], pdf: ['.pdf'], text: ['.txt', '.md', '.csv', '.log', '.json'] };
 const WHEN_DAYS = { today: 0, yesterday: 1, week: 7, month: 31 };
 const MAX_FOUND = 6;
 const SHORT_ENOUGH = 3500; // коротший документ модель прочитає сама, без переказу частинами
 
-const pythonOf = (config) => config.speech?.python ?? 'python.exe';
-const doc = (ctx, job, timeout) => (typeof ctx.os.doc === 'function' ? ctx.os.doc(job, timeout) : runDocTool(pythonOf(ctx.config), job, timeout));
+const doc = (ctx, job, timeout) => (typeof ctx.os.doc === 'function' ? ctx.os.doc(job, timeout) : runDocTool(pythonPath(ctx.config), job, timeout));
 
 // слова запиту -> початки слів (українські слова відмінюються), без службових
 const STOP = new Set(['про', 'для', 'що', 'який', 'яка', 'яке', 'які', 'був', 'була', 'було', 'там', 'десь', 'якийсь', 'якась', 'документ', 'файл', 'текст', 'йшлося', 'написано', 'мій', 'моя', 'мене']);

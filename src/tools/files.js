@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { str } from './util.js';
 import { checkFile } from '../security/pathguard.js';
-import { runDocTool } from './doctext.js';
+import { runDocTool, pythonPath } from './doctext.js';
 
 const SPECIAL = { this_pc: { name: 'Цей ПК', target: 'shell:MyComputerFolder' } };
 const MAX_RESULTS = 10, MAX_DEPTH = 4, MAX_LIST = 40;
@@ -164,7 +164,7 @@ export default [
       // Word і PDF — не текст: їхній вміст дістає окремий скрипт
       if (['.docx', '.pdf'].includes(path.extname(check.path).toLowerCase())) {
         const job = { cmd: 'text', path: check.path, max_chars: MAX_READ_CHARS };
-        const r = typeof os.doc === 'function' ? await os.doc(job) : await runDocTool(config.speech?.python ?? 'python.exe', job);
+        const r = typeof os.doc === 'function' ? await os.doc(job) : await runDocTool(pythonPath(config), job);
         if (!r.ok) return { ok: false, foreign: true, error: 'Не вдалося прочитати документ: файл пошкоджений, захищений або не того формату.' };
         return { ok: true, file: path.basename(check.path), truncated: !!r.truncated, text: String(r.text ?? '').slice(0, MAX_READ_CHARS),
           ...(r.truncated ? { hint: 'Це лише початок. Щоб переказати документ цілком, виклич summarize_document.' } : {}) };

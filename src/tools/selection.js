@@ -47,12 +47,14 @@ export default [
         required: ['task'],
       },
     }),
-    describe: ({ task, replace }) => `Обробити виділений текст («${str(task, 80)}»)${replace === true ? ' і надрукувати результат замість нього' : ''}`,
-    async run({ task, replace }, { os }) {
+    describe: ({ task }, { taint }) => `Обробити виділений текст: «${str(task, 300)}».${taint > 0 ? ' Результат лише покажу в панелі: не друкуватиму його й не кластиму в буфер обміну, бо в цій розмові я читав сторонній текст.' : ''}`,
+    async run({ task, replace }, { os, taint }) {
       if (typeof os.editSelection !== 'function') return { ok: false, error: 'Працювати з виділеним текстом зараз не можу' };
       const what = str(task, 300);
       if (!what) return { ok: false, error: 'Не сказано, що зробити з текстом' };
-      return os.editSelection(what, replace === true);
+      // після читання стороннього текста «завдання» могла скласти вбудована інструкція: тоді результат нікуди не
+      // друкується й буфер обміну не чіпається — його лише видно в панелі
+      return os.editSelection(what, replace === true && !(taint > 0), 'edit', { showOnly: taint > 0 });
     },
   },
 ];
